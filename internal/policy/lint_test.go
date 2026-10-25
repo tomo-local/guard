@@ -13,11 +13,10 @@ func validPolicy() Policy {
 		SourcePath: "git-write-confirm.yaml",
 		Spec: Spec{
 			Target: Target{Module: ModulePermission, Tool: "git"},
-			Action: ActionAllow,
+			Action: ActionConfirm,
 			Rules: []Rule{
 				{
-					To:      To{Label: "write", Functions: []string{"commit", "push"}},
-					Options: &Options{Confirm: &Confirm{Enabled: true}},
+					To: To{Label: "write", Functions: []string{"commit", "push"}},
 					Message: &Message{
 						Reason: "git への書き込み操作です。",
 						Next:   "実行前にユーザーに確認してください。",
@@ -158,32 +157,6 @@ func TestLint_DuplicateCatchAllWarning(t *testing.T) {
 	issues := Lint([]Policy{p})
 	if !hasWarningContaining(issues, "catch-all") {
 		t.Fatalf("expected a catch-all warning, got %v", issues)
-	}
-}
-
-func TestLint_ConfirmOnDenyIsAnError(t *testing.T) {
-	p := validPolicy()
-	p.Spec.Action = ActionDeny
-	p.Spec.Rules[0].Options = &Options{Confirm: &Confirm{Enabled: true}}
-
-	issues := Lint([]Policy{p})
-	if !hasErrorContaining(issues, "options.confirm") {
-		t.Fatalf("expected an options.confirm error when spec.action is DENY, got %v", issues)
-	}
-}
-
-func TestLint_ConfirmOnCustomCheckDenyWhenIsAnError(t *testing.T) {
-	p := validPolicy()
-	p.Spec.Rules[0].Options = &Options{
-		CustomCheck: &CustomCheck{
-			Path: "./check.sh",
-			When: []When{{Key: "exit", Value: 1, Action: ActionDeny, Confirm: true}},
-		},
-	}
-
-	issues := Lint([]Policy{p})
-	if !hasErrorContaining(issues, "when[0].confirm") {
-		t.Fatalf("expected a when[0].confirm error when that entry's action is DENY, got %v", issues)
 	}
 }
 

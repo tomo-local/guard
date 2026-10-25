@@ -13,7 +13,8 @@ Policies」](../../README.md#writing-policies)（日本語版は
   `GUARD_POLICIES_DIR`/`-rules` で変更可）以下は再帰的に読み込まれるため、
   同じツールのポリシーはサブディレクトリにまとめるのが慣例:
   `.guard/policies/<tool>/<短い action/qualifier 名>.yaml`
-  （例: `git/allow.yaml`, `git/destructive-deny.yaml`, `rm/deny.yaml`）。
+  （例: `git/allow.yaml`, `git/write-confirm.yaml`, `git/destructive-deny.yaml`,
+  `rm/deny.yaml`）。
 - `.yaml`/`.yml` の両拡張子を読み込む。それ以外の拡張子は無視される。
 
 ## トップレベル構造
@@ -27,7 +28,7 @@ spec:
   target:
     module: permission        # 必須。v1では厳密に "permission" と一致する必要がある
     tool: <string>             # 必須、空文字不可。例: "git", "rm", "curl"
-  action: ALLOW | DENY         # 必須。このいずれか1つのみ
+  action: ALLOW | DENY | CONFIRM  # 必須。このいずれか1つのみ
   rules:                       # 必須。最低1件
     - <Rule>
     - <Rule>
@@ -35,8 +36,15 @@ spec:
 ```
 
 `spec.action` はこのリソース内の **すべての** rule に適用される
-（1つのリソースの中にALLOWとDENYを混在させることはできない）。
-両方必要な場合は2つのファイルに分ける（[複数ファイルの例](#複数ファイルの例)を参照）。
+（1つのリソースの中で複数のactionを混在させることはできない）。
+複数必要な場合は複数のファイルに分ける（[複数ファイルの例](#複数ファイルの例)を参照）。
+`ALLOW`/`DENY`/`CONFIRM` は1つのenumの同格な3値で、`ALLOW` の上に別途
+「confirm修飾子」を重ねる仕組みではない。これは意図的な設計: 以前は
+`CONFIRM` を `ALLOW` + confirmフラグから導出していたが、その結果
+`DENY` + そのフラグという「書けるが矛盾する」組み合わせが生まれ、専用の
+lintルールで後から弾く必要があった。`CONFIRM` を `spec.action` の同格な
+値にすることで、そもそもその組み合わせを**書けなくしている**（1つの
+リソースは1つの `action` しか持てないため）。
 
 ## Rule
 
@@ -47,11 +55,6 @@ spec:
     args:
       anyOf: ["-f", "--force"]                     # 任意
   options:                                         # 任意
-    confirm:
-      enabled: true | false
-      message:
-        reason: "..."
-        next: "..."
     customCheck:
       path: "./scripts/x.sh"
       command: "..."
@@ -60,8 +63,7 @@ spec:
       when:
         - key: exit
           value: 0
-          action: ALLOW | DENY
-          confirm: true | false
+          action: ALLOW | DENY | CONFIRM
   message:
     reason: "..."
     next: "..."
@@ -92,15 +94,7 @@ functionと判定される）。[既知の制限](../../README.md#known-limitati
 
 | フィールド | 型 | 必須 | 補足 |
 |---|---|---|---|
-| `options.confirm` | オブジェクト | 任意 | [Confirm](#optionsconfirm) を参照。 |
 | `options.customCheck` | オブジェクト | 任意 | [CustomCheck](#optionscustomcheck) を参照。 |
-
-#### `options.confirm`
-
-| フィールド | 型 | 必須 | 補足 |
-|---|---|---|---|
-| `options.confirm.enabled` | bool | 任意（デフォルト `false`） | `true` かつリソースの `spec.action` が `ALLOW` の場合、実際の判定が `ALLOW` ではなく `CONFIRM` になる。**`spec.action` が `DENY` のときに `enabled: true` を設定すると `guard lint` がエラーにする**（DENY は無条件であるべきで、確認で覆せるものにはしない）。 |
-| `options.confirm.message` | オブジェクト | 任意 | この確認ゲート専用の `Message`（下記参照）。ルール自身のトップレベル `message` より優先される（両方設定されている場合）。詳細は[メッセージの優先順位](#メッセージの優先順位)を参照。 |
 
 #### `options.customCheck`
 
@@ -112,7 +106,7 @@ Istio の `action: CUSTOM` に相当する仕組み。判定の一部を外部�
 | `options.customCheck.path` | string | `path`/`command` のどちらか一方のみ | 実行可能なスクリプトへのパス。`args` と共に直接実行される。 |
 | `options.customCheck.command` | string | `path`/`command` のどちらか一方のみ | インラインシェルコマンド。`sh -c "<command>" <args...>` として実行される。 |
 | `options.customCheck.args` | string配列 | 任意 | `path` もしくは `command` に渡す追加の引数。 |
-| `options.customCheck.timeoutSeconds` | int | 任意（デフォルト `10`） | `0`以上である必要がある。プロセスが時間内に終了しない場合は強制終了され、「`when` のどれにも一致しなかった」扱いになる（ルールのベースaction/confirmにそのままフォールバック）。 |
+| `options.customCheck.timeoutSeconds` | int | 任意（デフォルト `10`） | `0`以上である必要がある。プロセスが時間内に終了しない場合は強制終了され、「`when` のどれにも一致しなかった」扱いになる（リソース自身の `spec.action` にそのままフォールバック）。 |
 | `options.customCheck.when` | `When` の配列 | 任意 | プロセスの終了コードに対して順に評価され、**最初に一致したもの**が採用される。どれにも一致しない場合（タイムアウトや実行エラーを含む）、customCheckによる上書きは発生しない。 |
 
 `When` エントリ:
@@ -121,8 +115,7 @@ Istio の `action: CUSTOM` に相当する仕組み。判定の一部を外部�
 |---|---|---|---|
 | `when[].key` | string | 必須 | v1では厳密に `"exit"` のみサポート（唯一のチェック対象キー）。 |
 | `when[].value` | int | 必須 | マッチさせる終了コード。 |
-| `when[].action` | string（固定語彙） | 必須 | `ALLOW` または `DENY`。 |
-| `when[].confirm` | bool | 任意（デフォルト `false`） | `true` かつ `when[].action` が `ALLOW` の場合、この上書き結果は単純な `ALLOW` ではなく `CONFIRM` になる。`options.confirm.enabled` と同じ理由で、**`when[].action` が `DENY` のときに `confirm: true` を設定すると `guard lint` がエラーにする**。 |
+| `when[].action` | string（固定語彙） | 必須 | `ALLOW`、`DENY`、または `CONFIRM`。 |
 
 > **セキュリティ注意**: `customCheck` のスクリプト/コマンドは、ポリシー
 > ファイル自身と同じ信頼境界（このリポジトリにコミットされ、レビューされた
@@ -138,14 +131,6 @@ Istio の `action: CUSTOM` に相当する仕組み。判定の一部を外部�
 いずれのフィールドにも、実際にマッチしたコマンド文字列（例: `git add -A
 .`）に置き換えられるプレースホルダ `{cmd}` を書ける。v1でサポートされる
 唯一のプレースホルダ。
-
-#### メッセージの優先順位
-
-ルールはトップレベルの `message`（このルールがどう判定しても使われる
-汎用的なreason/next。DENYルールが理由を説明する場合などに最も有用）**と/または**
-`options.confirm.message`（確認ゲート専用の文言）を持てる。両方が同じルールに
-設定されている場合は **`options.confirm.message` が優先される**。どちらも
-設定されていない場合、そのマッチに対してreason/nextは表示されない。
 
 ## 評価セマンティクス
 
@@ -163,25 +148,21 @@ Istio の `action: CUSTOM` に相当する仕組み。判定の一部を外部�
    [`to` マッチング](#toマッチ条件)が最大1つのruleを選ぶ。
 3. **マッチしたリソース間でのstrictest-wins**: 複数のリソースのruleが同じ
    コマンドにマッチした場合、その中で最も厳しい `spec.action` が勝つ
-   （`DENY > CONFIRM > ALLOW`。confirmから派生した `CONFIRM` は素の `ALLOW`
-   より厳しい扱い）。最も厳しいactionで同率だったすべてのマッチする
+   （`DENY > CONFIRM > ALLOW`）。最も厳しいactionで同率だったすべてのマッチする
    リソース/ruleのメッセージは重複を除いて結合される。
-4. **confirm修飾子**: マッチの中で最も厳しいactionが `ALLOW` で、同率の
-   ruleのいずれかが `options.confirm.enabled: true` を持つ場合、実際の
-   判定は `CONFIRM` になる。
-5. **CustomCheckによる上書き（存在する場合）**: 同率のruleのいずれかが
+4. **CustomCheckによる上書き（存在する場合）**: 同率のruleのいずれかが
    `options.customCheck` を持つ場合（最初に見つかったものが使われる）、
    スクリプト/コマンドが実行され、その終了コードに対して `when` リストが
-   評価される。マッチした場合は手順3-4の結果を**常に上書き**する ——
-   confirmゲート付きの `ALLOW` を素の `ALLOW` に格下げすることさえある。
-   マッチしなかった場合（タイムアウトを含む）は手順3-4の結果がそのまま
-   残る。つまり: **`customCheck` > `confirm` > 素のベースaction**。
-6. **何もマッチしない場合**: 分解されたコマンドにどのリソースのruleも
+   評価される。マッチした場合は手順3の結果を**常に上書き**する ——
+   `DENY` や `CONFIRM` を素の `ALLOW` に格下げすることさえある。
+   マッチしなかった場合（タイムアウトを含む）は手順3の結果がそのまま
+   残る。つまり: **`customCheck` > リソース自身の `action`**。
+5. **何もマッチしない場合**: 分解されたコマンドにどのリソースのruleも
    マッチしない場合、組み込みのデフォルトが適用される —— action は
    `CONFIRM`、マッチしなかったコマンドを名指しした汎用的なreason、
    汎用的な「確認してください」というnext。このデフォルトはYAML上の
    `action` として書くことはできない。
-7. **複合コマンドの集約**: 手順1-6は分解された各コマンドごとに1つの
+6. **複合コマンドの集約**: 手順1-5は分解された各コマンドごとに1つの
    `Decision` を生成する。コマンド行全体の最終的な判定は、再度それら全体に
    対するstrictest-wins（手順3と同じ優先順位）で決まる。
 
@@ -198,19 +179,17 @@ Istio の `action: CUSTOM` に相当する仕組み。判定の一部を外部�
 | エラー | `metadata.name` が空 |
 | エラー | `spec.target.module` が `"permission"` と異なる |
 | エラー | `spec.target.tool` が空 |
-| エラー | `spec.action` が `ALLOW`/`DENY` のいずれでもない |
+| エラー | `spec.action` が `ALLOW`/`DENY`/`CONFIRM` のいずれでもない |
 | エラー | `spec.rules` が空 |
 | エラー | `rules[].to.args.anyOf` が設定されているが空、または空文字列を含む |
 | エラー | `rules[].options.customCheck` に `path` と `command` のどちらも無い、または両方ある |
 | エラー | `rules[].options.customCheck.when[].key` が `"exit"` と異なる |
-| エラー | `rules[].options.confirm.enabled: true` と `spec.action: DENY` の組み合わせ |
-| エラー | `rules[].options.customCheck.when[].confirm: true` と、そのエントリの `action: DENY` の組み合わせ |
 | 警告 | 同一リソース内に2つ目のcatch-all（`functions`省略）ruleがある —— 最初のものが既にすべてにマッチするため到達不可能 |
 | 警告 | 2つ以上のリソースが同一の `{tool, functions, args}` マッチ条件を宣言している —— エラーではない（strictest-winsが確定的に解決する）が、ほとんどの場合意図しないもの。`to.label` はこのチェックから意図的に除外されている（マッチングに関与しないため）—— `label` だけが異なる2つのruleも重複として検出される。 |
 
 ## 例
 
-### confirm付きの最小ALLOW例
+### 最小のCONFIRM例
 
 ```yaml
 # .guard/policies/curl/confirm.yaml
@@ -222,16 +201,13 @@ spec:
   target:
     module: permission
     tool: curl
-  action: ALLOW
+  action: CONFIRM
   rules:
     - to:
         label: network
-      options:
-        confirm:
-          enabled: true
-          message:
-            reason: "{cmd} accesses an external network resource."
-            next: "Confirm the URL is safe with the user before proceeding."
+      message:
+        reason: "{cmd} accesses an external network resource."
+        next: "Confirm the URL is safe with the user before proceeding."
 ```
 
 ### フラグ単位のマッチ（DENYがCONFIRMに勝つ）
@@ -258,11 +234,11 @@ spec:
         next: "Suggest a non-destructive alternative, or ask the user to run it themselves."
 ```
 
-`args` 条件の無い通常の `git/allow.yaml`（write, confirm:true）と組み合わせる
+`args` 条件の無い通常の `git/write-confirm.yaml`（CONFIRM）と組み合わせる
 ことで、`git push` 単体は `CONFIRM`、`git push -f`/`--force` は `DENY` になる
-（両方がマッチし、`DENY` の方が厳しいため勝つ）。
+（両方のリソースのruleがマッチし、`DENY` の方が厳しいため勝つ）。
 
-### confirmフォールバック付きのCustomCheck
+### CONFIRMフォールバック付きのCustomCheck
 
 ```yaml
 # .guard/policies/git/push-custom-check.yaml
@@ -287,8 +263,7 @@ spec:
           when:
             - key: exit
               value: 0
-              action: ALLOW
-              confirm: true   # 安全と判定されても一応人間に確認してもらう
+              action: CONFIRM   # 安全と判定されても一応人間に確認してもらう
           # when のどれにも一致しない場合（exit!=0やタイムアウト等）は spec.action=DENY にフォールバック
       message:
         reason: "{cmd} requires the push-safety script to pass before it runs."
@@ -305,9 +280,14 @@ spec:
   action: ALLOW
   rules:
     - to: { label: read, functions: [log, status, diff] }
+```
+
+```yaml
+# .guard/policies/git/write-confirm.yaml
+spec:
+  action: CONFIRM
+  rules:
     - to: { label: write, functions: [add, commit, push] }
-      options:
-        confirm: { enabled: true }
 ```
 
 ```yaml

@@ -2,29 +2,33 @@ package policy
 
 // Action is the decision a policy resource applies to matching commands.
 //
-// Only ALLOW/DENY are valid in the YAML schema (spec.action, when.action) --
-// kept binary and symmetric with Istio's own ALLOW/DENY core. CONFIRM is
-// derived at evaluation time, never written directly: a rule reaching
-// ALLOW with its `options.confirm.enabled: true` (or a matching
-// `when.confirm: true`) gets gated behind a human confirmation instead of
-// proceeding silently. See Options.Confirm / When.Confirm.
+// ALLOW/DENY/CONFIRM are all valid directly in the YAML schema
+// (spec.action, when.action) as peer values of one enum -- there is no
+// "confirm modifier" layered on top of ALLOW. This is a deliberate
+// departure from Istio's binary ALLOW/DENY core: an earlier design kept
+// CONFIRM derived-only (ALLOW + a confirm flag), but that made
+// "DENY + confirm:true" a representable-but-contradictory combination
+// that had to be caught by a dedicated lint rule. Making CONFIRM a peer
+// enum value makes that combination impossible to write in the first
+// place, since a resource can only ever hold one Action.
+//
+// Action lives on Spec (one per file/resource), not per rule: the file
+// layout convention is "1 file = 1 tool + 1 action" (see the package
+// doc in loader.go and docs/policy-schema.md), so mixing e.g. an ALLOW
+// read rule and a CONFIRM write rule in the same resource means splitting
+// them into two files, same as ALLOW/DENY always required.
 type Action string
 
 const (
-	ActionAllow Action = "ALLOW"
-	ActionDeny  Action = "DENY"
-
-	// ActionConfirm never appears in a policy file. It is produced by the
-	// engine from ALLOW + a confirm modifier, or as the built-in fallback
-	// when no policy matches at all (see DefaultAction).
+	ActionAllow   Action = "ALLOW"
+	ActionDeny    Action = "DENY"
 	ActionConfirm Action = "CONFIRM"
 )
 
 // ValidActions lists every Action value that may appear directly in a
 // policy file (spec.action / when.action). Keep in sync with the
 // `oneof=...` validate tags on Spec.Action and When.Action below.
-// ActionConfirm is deliberately excluded -- see the Action doc comment.
-var ValidActions = []Action{ActionAllow, ActionDeny}
+var ValidActions = []Action{ActionAllow, ActionDeny, ActionConfirm}
 
 const (
 	APIVersion = "ai-guard/v1"
@@ -59,7 +63,7 @@ type Metadata struct {
 
 type Spec struct {
 	Target Target `yaml:"target"`
-	Action Action `yaml:"action" validate:"oneof=ALLOW DENY"`
+	Action Action `yaml:"action" validate:"oneof=ALLOW DENY CONFIRM"`
 	Rules  []Rule `yaml:"rules" validate:"min=1,dive"`
 }
 
@@ -71,11 +75,6 @@ type Target struct {
 type Rule struct {
 	To      To       `yaml:"to"`
 	Options *Options `yaml:"options,omitempty"`
-
-	// Message is this rule's general-purpose reason/next (e.g. why a DENY
-	// rule denies). Options.Confirm.Message, when set, takes precedence
-	// over this field for a confirmation gate's wording; this field is
-	// the fallback otherwise.
 	Message *Message `yaml:"message,omitempty"`
 }
 
@@ -98,8 +97,8 @@ type To struct {
 // of AnyOf as a literal token (e.g. distinguishing "git push" from
 // "git push -f" without pattern matching). Deliberately no regex/globs --
 // keep matching predictable and auditable; this is usually paired with a
-// separate, stricter resource (see git/push-force-deny.yaml) rather than
-// baked into one resource with per-rule actions.
+// separate, stricter rule (see git/push-force-deny.yaml) rather than baked
+// into one rule.
 type ArgsMatch struct {
 	AnyOf []string `yaml:"anyOf" validate:"min=1,dive,required"`
 }
@@ -115,23 +114,7 @@ type Message struct {
 }
 
 type Options struct {
-	// Confirm gates this rule's ALLOW behind a human confirmation instead
-	// of proceeding silently. Only meaningful when the resource's
-	// spec.action is ALLOW -- lint rejects Confirm.Enabled on a DENY rule,
-	// since DENY is meant to be unconditional, not negotiable via
-	// confirmation.
-	Confirm     *Confirm     `yaml:"confirm,omitempty"`
 	CustomCheck *CustomCheck `yaml:"customCheck,omitempty"`
-}
-
-// Confirm gates a rule's ALLOW behind a human confirmation step.
-type Confirm struct {
-	Enabled bool `yaml:"enabled"`
-
-	// Message overrides Rule.Message with wording specific to this
-	// confirmation gate. When unset, the rule's own Message is used
-	// instead.
-	Message *Message `yaml:"message,omitempty"`
 }
 
 // CustomCheck delegates part of the decision to an external script or
@@ -151,11 +134,7 @@ const DefaultCustomCheckTimeoutSeconds = 10
 type When struct {
 	Key    string `yaml:"key" validate:"eq=exit"`
 	Value  int    `yaml:"value"`
-	Action Action `yaml:"action" validate:"oneof=ALLOW DENY"`
-	// Confirm mirrors Options.Confirm: when this entry matches and Action
-	// is ALLOW, the result is gated behind human confirmation. Invalid
-	// (lint error) when Action is DENY, for the same reason as above.
-	Confirm bool `yaml:"confirm,omitempty"`
+	Action Action `yaml:"action" validate:"oneof=ALLOW DENY CONFIRM"`
 }
 
 // DefaultAction is applied when no policy rule matches a given command.

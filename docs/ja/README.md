@@ -43,10 +43,11 @@ force-push や `rm -rf`、未レビューの `curl | sh` のように、黙っ�
 - **ポリシー駆動の判定**: Claude Code の `PreToolUse` hook として評価され、
   コマンドが実行される前に `guard check` が ALLOW/DENY/CONFIRM
   （`allow`/`deny`/`ask`）を返す。
-- **Istio風マニフェスト**: 1ツール・1アクション（ALLOWまたはDENY）・1ファイルを
-  基本とし、`.guard/policies/<tool>/` にまとめる。
-- **CONFIRMは第3のactionではなく修飾子**: `options.confirm.enabled: true` でALLOW
-  ルールに人間の確認を挟む。スキーマを二値（ALLOW/DENY）のまま保ち、DENYは常に無条件。
+- **Istio風マニフェスト**: 1ツール・1アクション（ALLOW・DENY・CONFIRMのいずれか）・
+  1ファイルを基本とし、`.guard/policies/<tool>/` にまとめる。
+- **CONFIRMは修飾子ではなく同格のaction**: `spec.action: CONFIRM` はALLOW/DENYと
+  並ぶenumの値そのもので、「DENYなのに確認で通せる」という組み合わせ自体が書けない
+  （1リソースは1つのactionしか持てないため）。
 - **フラグ単位のマッチ**（`to.args.anyOf`）: 例えば `git push` と `git push -f`
   を区別できる。
 - **外部スクリプトへの委譲**（`options.customCheck`）: 判定の一部を外部スクリプトに
@@ -188,40 +189,48 @@ spec:
   target:
     module: permission   # v1では "permission" 固定
     tool: git
-  action: ALLOW           # ALLOW | DENY のいずれか1つ。このリソース内の全ruleに共通
+  action: ALLOW           # ALLOW | DENY | CONFIRM のいずれか1つ。このリソース内の全ruleに共通
   rules:
     - to:
         label: read                                    # 任意、自由記述。マッチングには影響しない
         functions: [log, status, diff, show, branch, fetch]
+```
+
+```yaml
+# .guard/policies/git/write-confirm.yaml
+apiVersion: ai-guard/v1
+kind: CommandGatePolicy
+metadata:
+  name: git-write-confirm
+spec:
+  target:
+    module: permission
+    tool: git
+  action: CONFIRM
+  rules:
     - to:
         label: write
         functions: [add, commit, push, pull, merge]    # 省略するとツール全体へのcatch-all
-      options:
-        confirm:
-          enabled: true   # ALLOWを人間の確認待ちにする（DENYと組み合わせるとlintエラー）
-          message:        # 任意: この確認ゲート専用の文言
-            reason: "{cmd} is a write operation."
-            next: "Confirm with the user before proceeding."
+      message:        # 任意
+        reason: "{cmd} is a write operation."
+        next: "Confirm with the user before proceeding."
 ```
 
 `message.reason`/`message.next` は `permissionDecisionReason` としてそのまま AI（Claude）に
 渡される文字列なので **英語で書く**。`{cmd}` は唯一サポートされるプレースホルダで、実際にマッチ
-したコマンド（例: `git add -A .`）に置き換えられる。ルールにはトップレベルの `message`
-（DENYの理由など、どの判定にも使われる汎用メッセージ）と `options.confirm.message`
-（確認ゲート専用の文言）の両方を持たせられ、両方が設定されている場合は
-`options.confirm.message` が優先される。
+したコマンド（例: `git add -A .`）に置き換えられる。
 
-- **action はリソース単位で1つだけ**、かつ **ALLOW/DENYの2値**（Istio のALLOW/DENYコア
-  と同じく二値にして、CONFIRMは「ALLOWに確認を挟む」という派生状態として扱う）。1ツールに
-  複数の action が必要ならリソースファイルを分ける。同じ action 内であれば `rules[]` を
-  増やして1ファイルにまとめてよい（例: `git/allow.yaml` は read と write(confirm) の
-  2ルールを持ち、破壊的操作だけ別 action として `git/destructive-deny.yaml` に分ける）。
-- `options.confirm.enabled: true` を付けると、そのルールが ALLOW になった場合に限り
-  人間の確認を挟む CONFIRM 相当の判定になる。**DENY と confirm の組み合わせは `guard lint`
-  がエラーにする**（DENY は無条件であるべきで、確認で覆せるものにはしない）。
+- **action はリソース単位で1つだけ**、かつ **ALLOW/DENY/CONFIRMの3値**（Istio の
+  ALLOW/DENYコアに対して、CONFIRMを「ALLOWに確認を挟む」という派生状態ではなく
+  同格のenum値として追加している）。以前の設計ではCONFIRMをALLOW+confirmフラグから
+  導出していたが、それだと「DENY+そのフラグ」という書けるが矛盾する組み合わせが
+  生まれ、専用のlintルールで弾く必要があった。actionを3値の同格な値にすることで、
+  そもそも1つのリソースが複数のactionを同時に持てなくなり、その組み合わせ自体が
+  書けなくなる。1ツールに複数の action が必要ならリソースファイルを分ける（例:
+  `git/allow.yaml`、`git/write-confirm.yaml`、`git/destructive-deny.yaml`）。
+  同じ action 内であれば `rules[]` を増やして1ファイルにまとめてよい。
 - 複数のポリシーが同じコマンドにマッチした場合、および `&&`/`;`/`|` 等で分解された
-  複数コマンドの判定が割れた場合は、**DENY > CONFIRM > ALLOW** の最も厳しい方が勝つ
-  （confirm はALLOWより厳しい扱い）。
+  複数コマンドの判定が割れた場合は、**DENY > CONFIRM > ALLOW** の最も厳しい方が勝つ。
 - どのポリシーにも一致しない場合のデフォルトは **CONFIRM**（内部フォールバックであり、
   YAML上の `action` としては書けない）。
 - `functions` を省略すると、そのツールの全呼び出しに対する catch-all ルールになる
@@ -237,7 +246,7 @@ spec:
 `to.args.anyOf` を付けると、そのルールは引数（argv）に指定したトークンのいずれかを含む
 場合にのみマッチする（正規表現やglobは使わず、トークンの完全一致のみ）。たとえば
 「`git push` 単体は CONFIRM、`git push -f`/`--force` は DENY」は、通常の
-`git/allow.yaml`（write, confirm.enabled:true, args条件なし）と、`args.anyOf: ["-f", "--force"]`
+`git/write-confirm.yaml`（CONFIRM、args条件なし）と、`args.anyOf: ["-f", "--force"]`
 を付けた別の DENY リソース（`git/push-force-deny.yaml`）の2つに分けて書く。`-f` が
 付いていれば両方マッチし DENY が勝ち、付いていなければ DENY 側がマッチせず CONFIRM の
 ままになる（既存の strictest-wins がそのまま効く）。
@@ -281,21 +290,19 @@ spec:
           when:
             - key: exit
               value: 0
-              action: ALLOW
-              confirm: true   # 安全と判定されても一応人間に確認してもらう
+              action: CONFIRM   # 安全と判定されても一応人間に確認してもらう
             # when のどれにも一致しない場合（exit!=0 等）は spec.action=DENY にフォールバック
 ```
+
+**`options.customCheck` を設定した場合の優先順位**: マッチした `when` エントリは
+常にリソース自身の `action` を上書きする（`DENY`/`CONFIRM` のリソースを素の `ALLOW`
+に格下げすることさえある）。上書きが発生しないのは `customCheck` が設定されていない
+場合、実行されなかった場合、または `when` のどれにもマッチしなかった場合（タイムアウト
+含む）のみで、その場合はリソース自身の `action` がそのまま使われる。
 
 > **セキュリティ注意**: `customCheck` のスクリプトは `.guard/policies/` と同じ信頼境界
 > （リポジトリにコミットされ、レビューされたもの）で実行される前提。信頼できないスクリプト
 > を参照しないこと。
-
-**同じルールに `options.confirm` と `options.customCheck` の両方が設定されている場合の
-優先順位**: `customCheck` > `confirm` > ベースのaction、の順で評価される。`when` の
-どれかにマッチした場合はその結果が常に勝つ（たとえそれが素の ALLOW で、ルール自身の
-`confirm.enabled: true` を上書きすることになっても）。`confirm` が効くのは、
-`customCheck` が設定されていない場合、実行されなかった場合、または `when` のどれにも
-マッチしなかった場合のみ。
 
 ## 既知の制限（v1）
 

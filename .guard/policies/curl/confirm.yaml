@@ -6,13 +6,10 @@ spec:
   target:
     module: permission
     tool: curl
-  action: ALLOW
+  action: CONFIRM
   rules:
     - to:
         label: network
-      options:
-        confirm:
-          enabled: true
-          message:
-            reason: "{cmd} accesses an external network resource."
-            next: "Confirm the URL is safe with the user before proceeding."
+      message:
+        reason: "{cmd} accesses an external network resource."
+        next: "Confirm the URL is safe with the user before proceeding."

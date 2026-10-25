@@ -7,11 +7,7 @@ import (
 	"ai-guard-tracker/internal/shellcmd"
 )
 
-func gitPolicy(action policy.Action, label string, functions []string, confirm bool, sourcePath string) policy.Policy {
-	var opts *policy.Options
-	if confirm {
-		opts = &policy.Options{Confirm: &policy.Confirm{Enabled: true}}
-	}
+func gitPolicy(action policy.Action, label string, functions []string, sourcePath string) policy.Policy {
 	return policy.Policy{
 		APIVersion: policy.APIVersion,
 		Kind:       policy.Kind,
@@ -20,7 +16,7 @@ func gitPolicy(action policy.Action, label string, functions []string, confirm b
 			Target: policy.Target{Module: policy.ModulePermission, Tool: "git"},
 			Action: action,
 			Rules: []policy.Rule{
-				{To: policy.To{Label: label, Functions: functions}, Options: opts},
+				{To: policy.To{Label: label, Functions: functions}},
 			},
 		},
 	}
@@ -28,9 +24,9 @@ func gitPolicy(action policy.Action, label string, functions []string, confirm b
 
 func samplePolicies() []policy.Policy {
 	return []policy.Policy{
-		gitPolicy(policy.ActionAllow, "read", []string{"log", "status"}, false, "git/read-allow.yaml"),
-		gitPolicy(policy.ActionAllow, "write", []string{"add", "commit", "push"}, true, "git/write-confirm.yaml"),
-		gitPolicy(policy.ActionDeny, "destructive", []string{"reset", "clean"}, false, "git/destructive-deny.yaml"),
+		gitPolicy(policy.ActionAllow, "read", []string{"log", "status"}, "git/read-allow.yaml"),
+		gitPolicy(policy.ActionConfirm, "write", []string{"add", "commit", "push"}, "git/write-confirm.yaml"),
+		gitPolicy(policy.ActionDeny, "destructive", []string{"reset", "clean"}, "git/destructive-deny.yaml"),
 		{
 			APIVersion: policy.APIVersion,
 			Kind:       policy.Kind,
@@ -53,7 +49,7 @@ func TestEvaluateCommand(t *testing.T) {
 		want policy.Action
 	}{
 		{"git read -> plain allow", shellcmd.SimpleCommand{Tool: "git", Args: []string{"log"}}, policy.ActionAllow},
-		{"git write -> allow+confirm becomes confirm", shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}}, policy.ActionConfirm},
+		{"git write -> confirm", shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}}, policy.ActionConfirm},
 		{"git destructive -> deny", shellcmd.SimpleCommand{Tool: "git", Args: []string{"reset", "--hard"}}, policy.ActionDeny},
 		{"rm flat catch-all -> deny", shellcmd.SimpleCommand{Tool: "rm", Args: []string{"-rf", "/"}}, policy.ActionDeny},
 		{"unknown tool defaults to confirm", shellcmd.SimpleCommand{Tool: "curl", Args: []string{"http://x"}}, policy.DefaultAction},
@@ -70,20 +66,19 @@ func TestEvaluateCommand(t *testing.T) {
 	}
 }
 
-func TestEvaluateCommand_ConfirmModifierOnlyAppliesToAllow(t *testing.T) {
-	// Two policies target the same tool/mode/function but only one asks
-	// for confirmation. Since both tie at ALLOW (the strictest action
-	// among matches), the confirm modifier from either one should win for
-	// the whole group -- confirm is "stricter" than a plain allow.
+func TestEvaluateCommand_ConfirmBeatsAllowWhenBothMatch(t *testing.T) {
+	// Two policies target the same tool/function but declare different
+	// actions. Since CONFIRM outranks ALLOW in severityRank, the CONFIRM
+	// resource should win the strictest-wins comparison for the whole group.
 	policies := []policy.Policy{
-		gitPolicy(policy.ActionAllow, "write", []string{"commit"}, false, "git/write-allow.yaml"),
-		gitPolicy(policy.ActionAllow, "write", []string{"commit"}, true, "git/write-confirm.yaml"),
+		gitPolicy(policy.ActionAllow, "write", []string{"commit"}, "git/write-allow.yaml"),
+		gitPolicy(policy.ActionConfirm, "write", []string{"commit"}, "git/write-confirm.yaml"),
 	}
 	e := NewEvaluator(policies)
 
 	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"commit"}})
 	if got.Action != policy.ActionConfirm {
-		t.Fatalf("expected confirm from either matching rule to win over a plain allow, got %s", got.Action)
+		t.Fatalf("expected CONFIRM to win over a plain ALLOW when both match, got %s", got.Action)
 	}
 }
 
@@ -95,11 +90,10 @@ func TestEvaluateCommand_MessageCmdPlaceholder(t *testing.T) {
 			SourcePath: "git/write-confirm.yaml",
 			Spec: policy.Spec{
 				Target: policy.Target{Module: policy.ModulePermission, Tool: "git"},
-				Action: policy.ActionAllow,
+				Action: policy.ActionConfirm,
 				Rules: []policy.Rule{
 					{
-						To:      policy.To{Label: "write", Functions: []string{"add"}},
-						Options: &policy.Options{Confirm: &policy.Confirm{Enabled: true}},
+						To: policy.To{Label: "write", Functions: []string{"add"}},
 						Message: &policy.Message{
 							Reason: "{cmd} is a write operation.",
 							Next:   "Confirm {cmd} with the user.",
@@ -120,48 +114,6 @@ func TestEvaluateCommand_MessageCmdPlaceholder(t *testing.T) {
 	}
 	if got.Next != wantNext {
 		t.Fatalf("Next = %q, want %q", got.Next, wantNext)
-	}
-}
-
-func TestEvaluateCommand_ConfirmMessageOverridesRuleMessage(t *testing.T) {
-	policies := []policy.Policy{
-		{
-			APIVersion: policy.APIVersion,
-			Kind:       policy.Kind,
-			SourcePath: "curl/confirm.yaml",
-			Spec: policy.Spec{
-				Target: policy.Target{Module: policy.ModulePermission, Tool: "curl"},
-				Action: policy.ActionAllow,
-				Rules: []policy.Rule{
-					{
-						To: policy.To{Label: "network"},
-						Options: &policy.Options{
-							Confirm: &policy.Confirm{
-								Enabled: true,
-								Message: &policy.Message{
-									Reason: "confirm reason",
-									Next:   "confirm next",
-								},
-							},
-						},
-						Message: &policy.Message{
-							Reason: "rule reason",
-							Next:   "rule next",
-						},
-					},
-				},
-			},
-		},
-	}
-
-	e := NewEvaluator(policies)
-	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "curl", Args: []string{"http://x"}})
-
-	if got.Reason != "confirm reason" {
-		t.Fatalf("Reason = %q, want %q (options.confirm.message should win over rule.message)", got.Reason, "confirm reason")
-	}
-	if got.Next != "confirm next" {
-		t.Fatalf("Next = %q, want %q (options.confirm.message should win over rule.message)", got.Next, "confirm next")
 	}
 }
 
@@ -309,7 +261,7 @@ func TestEvaluateCommand_CustomCheckOverridesAction(t *testing.T) {
 	}
 }
 
-func TestEvaluateCommand_CustomCheckWhenConfirmOverridesToConfirm(t *testing.T) {
+func TestEvaluateCommand_CustomCheckWhenCanOverrideToConfirm(t *testing.T) {
 	policies := []policy.Policy{
 		{
 			APIVersion: policy.APIVersion,
@@ -325,7 +277,7 @@ func TestEvaluateCommand_CustomCheckWhenConfirmOverridesToConfirm(t *testing.T) 
 							CustomCheck: &policy.CustomCheck{
 								Command: "exit 0",
 								When: []policy.When{
-									{Key: "exit", Value: 0, Action: policy.ActionAllow, Confirm: true},
+									{Key: "exit", Value: 0, Action: policy.ActionConfirm},
 								},
 							},
 						},
@@ -338,16 +290,13 @@ func TestEvaluateCommand_CustomCheckWhenConfirmOverridesToConfirm(t *testing.T) 
 	e := NewEvaluator(policies)
 	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}})
 	if got.Action != policy.ActionConfirm {
-		t.Fatalf("expected when.confirm=true on an ALLOW override to produce CONFIRM, got %s", got.Action)
+		t.Fatalf("expected when[].action=CONFIRM to override the resource's own DENY, got %s", got.Action)
 	}
 }
 
-func TestEvaluateCommand_CustomCheckOverrideBeatsConfirm(t *testing.T) {
-	// Precedence when a rule sets both options.confirm and
-	// options.customCheck: customCheck > confirm > the plain base action.
-	// Here the customCheck's `when` matches and resolves to plain ALLOW
-	// (no confirm on the when entry), which must win over the rule's own
-	// confirm.enabled:true.
+func TestEvaluateCommand_CustomCheckOverrideBeatsBaseAction(t *testing.T) {
+	// A matched customCheck `when` entry always overrides the resource's
+	// plain Action, even downgrading it (here CONFIRM -> ALLOW).
 	policies := []policy.Policy{
 		{
 			APIVersion: policy.APIVersion,
@@ -355,12 +304,11 @@ func TestEvaluateCommand_CustomCheckOverrideBeatsConfirm(t *testing.T) {
 			SourcePath: "git/push-custom-check.yaml",
 			Spec: policy.Spec{
 				Target: policy.Target{Module: policy.ModulePermission, Tool: "git"},
-				Action: policy.ActionAllow,
+				Action: policy.ActionConfirm,
 				Rules: []policy.Rule{
 					{
 						To: policy.To{Label: "write", Functions: []string{"push"}},
 						Options: &policy.Options{
-							Confirm: &policy.Confirm{Enabled: true},
 							CustomCheck: &policy.CustomCheck{
 								Command: "exit 0",
 								When: []policy.When{
@@ -377,11 +325,11 @@ func TestEvaluateCommand_CustomCheckOverrideBeatsConfirm(t *testing.T) {
 	e := NewEvaluator(policies)
 	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}})
 	if got.Action != policy.ActionAllow {
-		t.Fatalf("expected customCheck's matched ALLOW to override the rule's confirm.enabled:true, got %s", got.Action)
+		t.Fatalf("expected customCheck's matched ALLOW to override the resource's own CONFIRM action, got %s", got.Action)
 	}
 }
 
-func TestEvaluateCommand_CustomCheckNoWhenMatchKeepsEffectiveBaseAction(t *testing.T) {
+func TestEvaluateCommand_CustomCheckNoWhenMatchKeepsBaseAction(t *testing.T) {
 	policies := []policy.Policy{
 		{
 			APIVersion: policy.APIVersion,
@@ -389,12 +337,11 @@ func TestEvaluateCommand_CustomCheckNoWhenMatchKeepsEffectiveBaseAction(t *testi
 			SourcePath: "git/push-custom-check.yaml",
 			Spec: policy.Spec{
 				Target: policy.Target{Module: policy.ModulePermission, Tool: "git"},
-				Action: policy.ActionAllow,
+				Action: policy.ActionConfirm,
 				Rules: []policy.Rule{
 					{
 						To: policy.To{Label: "write", Functions: []string{"push"}},
 						Options: &policy.Options{
-							Confirm: &policy.Confirm{Enabled: true},
 							CustomCheck: &policy.CustomCheck{
 								Command: "exit 9",
 								When: []policy.When{
@@ -411,6 +358,6 @@ func TestEvaluateCommand_CustomCheckNoWhenMatchKeepsEffectiveBaseAction(t *testi
 	e := NewEvaluator(policies)
 	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}})
 	if got.Action != policy.ActionConfirm {
-		t.Fatalf("expected the ALLOW+confirm effective base action to survive when no `when` entry matches, got %s", got.Action)
+		t.Fatalf("expected the resource's own CONFIRM action to survive when no `when` entry matches, got %s", got.Action)
 	}
 }

@@ -13,7 +13,8 @@ lint` enforces.
   by default, overridable with `GUARD_POLICIES_DIR`/`-rules`), so policies
   for the same tool are conventionally grouped under a subdirectory:
   `.guard/policies/<tool>/<short-action-or-qualifier>.yaml` (e.g.
-  `git/allow.yaml`, `git/destructive-deny.yaml`, `rm/deny.yaml`).
+  `git/allow.yaml`, `git/write-confirm.yaml`, `git/destructive-deny.yaml`,
+  `rm/deny.yaml`).
 - Both `.yaml` and `.yml` extensions are loaded; any other extension is
   ignored.
 
@@ -28,7 +29,7 @@ spec:
   target:
     module: permission        # required, must equal exactly "permission" in v1
     tool: <string>             # required, non-empty, e.g. "git", "rm", "curl"
-  action: ALLOW | DENY         # required, exactly one of these two values
+  action: ALLOW | DENY | CONFIRM  # required, exactly one of these three values
   rules:                       # required, at least 1 entry
     - <Rule>
     - <Rule>
@@ -36,8 +37,15 @@ spec:
 ```
 
 `spec.action` applies to **every** rule in this resource -- a resource
-can't mix ALLOW and DENY rules. If a tool needs both, split it across two
-files (see [Multi-file example](#multi-file-example)).
+can't mix actions. If a tool needs more than one, split it across multiple
+files (see [Multi-file example](#multi-file-example)). `ALLOW`/`DENY`/
+`CONFIRM` are three peer values of one enum -- there is no separate
+"confirm modifier" layered on top of `ALLOW`. This is deliberate: an
+earlier design derived `CONFIRM` from `ALLOW` + a confirm flag, which made
+`DENY` + that flag a representable-but-contradictory combination that had
+to be caught by a dedicated lint rule. Making `CONFIRM` a peer value of
+`spec.action` makes that combination impossible to write in the first
+place, since a resource can only ever hold one `action`.
 
 ## Rule
 
@@ -48,11 +56,6 @@ files (see [Multi-file example](#multi-file-example)).
     args:
       anyOf: ["-f", "--force"]                     # optional
   options:                                         # optional
-    confirm:
-      enabled: true | false
-      message:
-        reason: "..."
-        next: "..."
     customCheck:
       path: "./scripts/x.sh"
       command: "..."
@@ -61,8 +64,7 @@ files (see [Multi-file example](#multi-file-example)).
       when:
         - key: exit
           value: 0
-          action: ALLOW | DENY
-          confirm: true | false
+          action: ALLOW | DENY | CONFIRM
   message:
     reason: "..."
     next: "..."
@@ -94,15 +96,7 @@ would otherwise apply.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `options.confirm` | object | no | See [Confirm](#optionsconfirm). |
 | `options.customCheck` | object | no | See [CustomCheck](#optionscustomcheck). |
-
-#### `options.confirm`
-
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `options.confirm.enabled` | bool | no (default `false`) | When `true` **and** the resource's `spec.action` is `ALLOW`, the effective decision becomes `CONFIRM` instead of a silent `ALLOW`. **`guard lint` rejects `enabled: true` when `spec.action` is `DENY`** -- DENY is meant to be unconditional, never negotiable via confirmation. |
-| `options.confirm.message` | object | no | A `Message` (see below) specific to this confirmation gate. Takes precedence over the rule's own top-level `message` when both are set -- see [Message precedence](#message-precedence). |
 
 #### `options.customCheck`
 
@@ -114,7 +108,7 @@ external script or inline shell command.
 | `options.customCheck.path` | string | exactly one of `path`/`command` | Path to an executable script, run directly with `args`. |
 | `options.customCheck.command` | string | exactly one of `path`/`command` | Inline shell command, run via `sh -c "<command>" <args...>`. |
 | `options.customCheck.args` | list of strings | no | Extra arguments passed to `path` or appended after `command`. |
-| `options.customCheck.timeoutSeconds` | int | no (default `10`) | Must be `>= 0`. If the process doesn't exit in time, it's killed and treated as "no `when` match" (falls back to the rule's base action/confirm as usual). |
+| `options.customCheck.timeoutSeconds` | int | no (default `10`) | Must be `>= 0`. If the process doesn't exit in time, it's killed and treated as "no `when` match" (falls back to the resource's own `spec.action` as usual). |
 | `options.customCheck.when` | list of `When` | no | Evaluated in order against the process's exit code; the **first** match wins. If none match (including on timeout or a run error), the customCheck contributes no override. |
 
 `When` entries:
@@ -123,8 +117,7 @@ external script or inline shell command.
 |---|---|---|---|
 | `when[].key` | string | yes | Must equal exactly `"exit"` in v1 -- the only supported check key. |
 | `when[].value` | int | yes | The exit code to match. |
-| `when[].action` | string (enum) | yes | `ALLOW` or `DENY`. |
-| `when[].confirm` | bool | no (default `false`) | When `true` **and** `when[].action` is `ALLOW`, the override resolves to `CONFIRM` instead of plain `ALLOW`. **`guard lint` rejects `confirm: true` when `when[].action` is `DENY`**, for the same reason as `options.confirm.enabled`. |
+| `when[].action` | string (enum) | yes | `ALLOW`, `DENY`, or `CONFIRM`. |
 
 > **Security note**: `customCheck` scripts/commands run with the same
 > trust boundary as the policy files themselves (committed to and
@@ -140,15 +133,6 @@ external script or inline shell command.
 Either field may contain the literal placeholder `{cmd}`, replaced with
 the exact matched command string (e.g. `git add -A .`). It's the only
 placeholder supported in v1.
-
-#### Message precedence
-
-A rule may define its own top-level `message` (the general-purpose
-reason/next for whatever this rule decides -- most useful for a DENY rule
-explaining why it denies) **and/or** `options.confirm.message` (wording
-specific to the confirmation gate). When both are set on the same rule,
-**`options.confirm.message` wins**. When neither is set, no reason/next is
-surfaced for that match.
 
 ## Evaluation semantics
 
@@ -167,24 +151,20 @@ isn't behaving the way you expect.
    matching](#to-match-condition) picks at most one rule.
 3. **Strictest-wins across matching resources**: if multiple resources'
    rules match the same command, the strictest `spec.action` among them
-   wins (`DENY > CONFIRM > ALLOW`, with the confirm-derived `CONFIRM`
-   ranking above plain `ALLOW`). Messages are deduplicated and joined
+   wins (`DENY > CONFIRM > ALLOW`). Messages are deduplicated and joined
    across every matching resource/rule that tied at the strictest action.
-4. **Confirm modifier**: if the strictest action among matches is `ALLOW`
-   and any tied rule has `options.confirm.enabled: true`, the effective
-   action becomes `CONFIRM`.
-5. **CustomCheck override, if present**: when any tied rule has
+4. **CustomCheck override, if present**: when any tied rule has
    `options.customCheck` (the first one found is used), the script/command
    runs and its `when` list is evaluated against the exit code. A match
-   **always overrides** steps 3-4's result -- even downgrading a
-   confirm-gated `ALLOW` back to plain `ALLOW`. No match (including on
-   timeout) leaves the result from steps 3-4 untouched. In short:
-   **`customCheck` > `confirm` > the plain base action.**
-6. **No match at all**: if no resource's rule matches a decomposed
+   **always overrides** step 3's result -- even downgrading a `DENY` or
+   `CONFIRM` to a plain `ALLOW`. No match (including on timeout) leaves the
+   result from step 3 untouched. In short: **`customCheck` > the resource's
+   own `action`.**
+5. **No match at all**: if no resource's rule matches a decomposed
    command, the built-in default applies -- action `CONFIRM`, a generic
    reason naming the unmatched command, and a generic "review and confirm"
    next step. This default is never writable as a YAML `action`.
-7. **Aggregating a compound command**: steps 1-6 produce one `Decision`
+6. **Aggregating a compound command**: steps 1-5 produce one `Decision`
    per decomposed command; the final decision for the whole command line
    is, again, strictest-wins across all of them (same ranking as step 3).
 
@@ -201,19 +181,17 @@ checks:
 | Error | `metadata.name` empty |
 | Error | `spec.target.module` != `"permission"` |
 | Error | `spec.target.tool` empty |
-| Error | `spec.action` not one of `ALLOW`/`DENY` |
+| Error | `spec.action` not one of `ALLOW`/`DENY`/`CONFIRM` |
 | Error | `spec.rules` empty |
 | Error | `rules[].to.args.anyOf` set but empty, or containing an empty string |
 | Error | `rules[].options.customCheck` has neither `path` nor `command`, or has both |
 | Error | `rules[].options.customCheck.when[].key` != `"exit"` |
-| Error | `rules[].options.confirm.enabled: true` together with `spec.action: DENY` |
-| Error | `rules[].options.customCheck.when[].confirm: true` together with that entry's `action: DENY` |
 | Warning | A second catch-all (no `functions`) rule in the same resource -- the first one already makes it unreachable |
 | Warning | Two or more resources declare the exact same `{tool, functions, args}` match condition -- not an error (strictest-wins resolves it deterministically), but almost always unintentional. `to.label` is deliberately excluded from this check, since it plays no part in matching -- two rules differing only in `label` are still flagged. |
 
 ## Examples
 
-### Minimal ALLOW with confirm
+### Minimal CONFIRM
 
 ```yaml
 # .guard/policies/curl/confirm.yaml
@@ -225,16 +203,13 @@ spec:
   target:
     module: permission
     tool: curl
-  action: ALLOW
+  action: CONFIRM
   rules:
     - to:
         label: network
-      options:
-        confirm:
-          enabled: true
-          message:
-            reason: "{cmd} accesses an external network resource."
-            next: "Confirm the URL is safe with the user before proceeding."
+      message:
+        reason: "{cmd} accesses an external network resource."
+        next: "Confirm the URL is safe with the user before proceeding."
 ```
 
 ### Flag-level matching (DENY wins over CONFIRM)
@@ -261,11 +236,12 @@ spec:
         next: "Suggest a non-destructive alternative, or ask the user to run it themselves."
 ```
 
-Paired with a plain `git/allow.yaml` ALLOW+confirm rule for `push` with no
-`args` condition: `git push` alone evaluates to `CONFIRM`, while `git push
--f`/`--force` evaluates to `DENY` (both rules match; `DENY` is stricter).
+Paired with a plain `git/write-confirm.yaml` CONFIRM rule for `push` with
+no `args` condition: `git push` alone evaluates to `CONFIRM`, while `git
+push -f`/`--force` evaluates to `DENY` (both resources' rules match;
+`DENY` is stricter).
 
-### CustomCheck with confirm fallback
+### CustomCheck with a CONFIRM fallback
 
 ```yaml
 # .guard/policies/git/push-custom-check.yaml
@@ -290,8 +266,7 @@ spec:
           when:
             - key: exit
               value: 0
-              action: ALLOW
-              confirm: true   # still confirm with a human even when the script says it's safe
+              action: CONFIRM   # still confirm with a human even when the script says it's safe
           # no `when` match (e.g. exit != 0, or timeout) falls back to spec.action = DENY
       message:
         reason: "{cmd} requires the push-safety script to pass before it runs."
@@ -308,9 +283,14 @@ spec:
   action: ALLOW
   rules:
     - to: { label: read, functions: [log, status, diff] }
+```
+
+```yaml
+# .guard/policies/git/write-confirm.yaml
+spec:
+  action: CONFIRM
+  rules:
     - to: { label: write, functions: [add, commit, push] }
-      options:
-        confirm: { enabled: true }
 ```
 
 ```yaml

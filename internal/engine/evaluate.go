@@ -79,12 +79,10 @@ func (e *Evaluator) EvaluateAll(raw string) (Decision, []Decision) {
 // EvaluateCommand evaluates a single simple command against every policy
 // that targets its tool.
 //
-// When a rule sets both options.confirm and options.customCheck, they are
-// applied in strict priority order: customCheck's result (when its `when`
-// list matches) > confirm > the plain base action. A matched customCheck
-// override always wins, even if it downgrades a confirm-gated ALLOW back
-// to plain ALLOW; confirm only takes effect when customCheck didn't run,
-// has no `when` match, or wasn't present at all.
+// When a rule sets options.customCheck, its result (when its `when` list
+// matches) always overrides the resource's plain Action -- even downgrading
+// a CONFIRM or DENY to a plain ALLOW. The override only doesn't apply when
+// customCheck didn't run, has no `when` match, or wasn't present at all.
 func (e *Evaluator) EvaluateCommand(cmd shellcmd.SimpleCommand) Decision {
 	type match struct {
 		pol  policy.Policy
@@ -116,37 +114,23 @@ func (e *Evaluator) EvaluateCommand(cmd shellcmd.SimpleCommand) Decision {
 
 	var reasons, nexts, labels, paths []string
 	var customCheck *policy.CustomCheck
-	anyConfirm := false
 	for _, m := range matches {
 		if m.pol.Spec.Action != strictest {
 			continue
 		}
 		paths = append(paths, m.pol.SourcePath)
-		if msg := effectiveMessage(m.rule); msg != nil {
-			reasons = appendUnique(reasons, renderMessageTemplate(msg.Reason, cmd))
-			nexts = appendUnique(nexts, renderMessageTemplate(msg.Next, cmd))
+		if m.rule.Message != nil {
+			reasons = appendUnique(reasons, renderMessageTemplate(m.rule.Message.Reason, cmd))
+			nexts = appendUnique(nexts, renderMessageTemplate(m.rule.Message.Next, cmd))
 		}
 		labels = appendUnique(labels, m.rule.To.Label)
-		if m.rule.Options != nil {
-			if m.rule.Options.Confirm != nil && m.rule.Options.Confirm.Enabled {
-				anyConfirm = true
-			}
-			if customCheck == nil && m.rule.Options.CustomCheck != nil {
-				customCheck = m.rule.Options.CustomCheck
-			}
+		if customCheck == nil && m.rule.Options != nil && m.rule.Options.CustomCheck != nil {
+			customCheck = m.rule.Options.CustomCheck
 		}
-	}
-
-	// ALLOW + confirm.enabled:true is gated behind a human check instead of
-	// proceeding silently (see Options.Confirm). Lint rejects confirm on a
-	// DENY rule, so DENY can never be softened this way.
-	effectiveAction := strictest
-	if strictest == policy.ActionAllow && anyConfirm {
-		effectiveAction = policy.ActionConfirm
 	}
 
 	decision := Decision{
-		Action:          effectiveAction,
+		Action:          strictest,
 		Reason:          strings.Join(reasons, "\n"),
 		Next:            strings.Join(nexts, "\n"),
 		Label:           strings.Join(labels, ", "),
@@ -189,16 +173,6 @@ func commandString(cmd shellcmd.SimpleCommand) string {
 		return cmd.Tool
 	}
 	return cmd.Tool + " " + strings.Join(cmd.Args, " ")
-}
-
-// effectiveMessage returns r's message, preferring Options.Confirm.Message
-// (wording specific to the confirmation gate) over the rule's own Message
-// when both are set.
-func effectiveMessage(r policy.Rule) *policy.Message {
-	if r.Options != nil && r.Options.Confirm != nil && r.Options.Confirm.Message != nil {
-		return r.Options.Confirm.Message
-	}
-	return r.Message
 }
 
 // renderMessageTemplate replaces the {cmd} placeholder -- the only one

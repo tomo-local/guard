@@ -39,35 +39,9 @@ func lintOne(p Policy) []Issue {
 			}
 			catchAllSeen = true
 		}
-
-		lintConfirmOnDeny(c, i, p.Spec.Action, r)
 	}
 
 	return c.Issues()
-}
-
-// lintConfirmOnDeny flags the "confirm" modifier combined with DENY, which
-// is contradictory: DENY is meant to be unconditional, never negotiable
-// via a human confirmation prompt. Checked both for the rule's own
-// options.confirm (against the resource's spec.action) and for each
-// customCheck when[] entry (against that entry's own action).
-func lintConfirmOnDeny(c *IssueCollector, ruleIdx int, specAction Action, r Rule) {
-	if r.Options == nil {
-		return
-	}
-
-	if r.Options.Confirm != nil && r.Options.Confirm.Enabled && specAction == ActionDeny {
-		c.Errorf("spec.rules[%d].options.confirm.enabled: must not be set when spec.action is DENY (DENY is unconditional)", ruleIdx)
-	}
-
-	if r.Options.CustomCheck == nil {
-		return
-	}
-	for wi, w := range r.Options.CustomCheck.When {
-		if w.Confirm && w.Action == ActionDeny {
-			c.Errorf("spec.rules[%d].options.customCheck.when[%d].confirm: must not be set when when[%d].action is DENY (DENY is unconditional)", ruleIdx, wi, wi)
-		}
-	}
 }
 
 // lintCrossPolicy flags resources that declare the exact same match

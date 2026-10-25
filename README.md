@@ -47,11 +47,12 @@ implemented. `guard report` is the only piece still pending (see
 - **Policy-driven decisions** for Bash commands, evaluated as a Claude
   Code `PreToolUse` hook -- `guard check` returns ALLOW/DENY/CONFIRM
   (`allow`/`deny`/`ask`) before a command ever runs.
-- **Istio-style manifests**: one tool, one action (ALLOW or DENY), one
-  file, grouped under `.guard/policies/<tool>/`.
-- **CONFIRM as a modifier, not a third action**: `options.confirm.enabled:
-  true` gates an ALLOW rule behind a human confirmation, keeping the
-  schema binary and unambiguous (DENY always stays unconditional).
+- **Istio-style manifests**: one tool, one action (ALLOW, DENY, or
+  CONFIRM), one file, grouped under `.guard/policies/<tool>/`.
+- **CONFIRM as a peer action, not a modifier**: `spec.action: CONFIRM` is
+  its own enum value alongside ALLOW/DENY, so "DENY but still
+  confirmable" can't even be written -- a resource only ever holds one
+  action.
 - **Flag-level matching** (`to.args.anyOf`) to distinguish, e.g., plain
   `git push` from `git push -f`.
 - **Pluggable custom checks** (`options.customCheck`): delegate part of
@@ -211,46 +212,52 @@ spec:
   target:
     module: permission   # fixed to "permission" in v1
     tool: git
-  action: ALLOW           # exactly one of ALLOW | DENY, shared by every rule in this resource
+  action: ALLOW           # exactly one of ALLOW | DENY | CONFIRM, shared by every rule in this resource
   rules:
     - to:
         label: read                                    # optional, free text -- purely descriptive, doesn't affect matching
         functions: [log, status, diff, show, branch, fetch]
+```
+
+```yaml
+# .guard/policies/git/write-confirm.yaml
+apiVersion: ai-guard/v1
+kind: CommandGatePolicy
+metadata:
+  name: git-write-confirm
+spec:
+  target:
+    module: permission
+    tool: git
+  action: CONFIRM
+  rules:
     - to:
         label: write
         functions: [add, commit, push, pull, merge]    # omit for a catch-all over the whole tool
-      options:
-        confirm:
-          enabled: true     # gates this rule's ALLOW behind human confirmation (lint rejects this with DENY)
-          message:          # optional: wording specific to this confirmation gate
-            reason: "{cmd} is a write operation."
-            next: "Confirm with the user before proceeding."
+      message:          # optional
+        reason: "{cmd} is a write operation."
+        next: "Confirm with the user before proceeding."
 ```
 
 `message.reason`/`message.next` are passed verbatim to the AI (Claude) as
 `permissionDecisionReason`, so **write them in English**. `{cmd}` is the
 only supported placeholder; it's replaced with the exact command that
-matched (e.g. `git add -A .`). A rule can set its own top-level `message`
-(used for any outcome, e.g. a DENY rule explaining why) and/or
-`options.confirm.message` (wording specific to the confirmation gate);
-when both are set, `options.confirm.message` wins.
+matched (e.g. `git add -A .`).
 
-- **`action` is exactly one value per resource, and it's binary (ALLOW or
-  DENY only)** -- mirroring Istio's own ALLOW/DENY core, with CONFIRM
-  treated as a derived "ALLOW with a confirmation gate" state. If a tool
-  needs more than one action, split it across resource files. Multiple
-  rules for the *same* action can live in one file (e.g. `git/allow.yaml`
-  holds both the read rule and the write(+confirm) rule, while the
-  destructive case gets its own action in `git/destructive-deny.yaml`).
-- `options.confirm.enabled: true` turns a rule's ALLOW into a
-  human-confirmation gate (CONFIRM-equivalent) -- but only when the
-  resource's action is ALLOW. **Combining it with `action: DENY` is a
-  `guard lint` error** (DENY is meant to be unconditional, not something
-  confirmation can override).
+- **`action` is exactly one value per resource, chosen from ALLOW, DENY,
+  or CONFIRM** -- three peer values of one enum, not ALLOW/DENY with
+  CONFIRM layered on top as a modifier. An earlier design derived CONFIRM
+  from `ALLOW` + a confirm flag, but that made `DENY` + that flag a
+  representable-but-contradictory combination that needed a dedicated
+  lint rule to catch. Making CONFIRM a peer value makes that combination
+  impossible to write in the first place, since a resource can only ever
+  hold one action. If a tool needs more than one action, split it across
+  resource files (e.g. `git/allow.yaml`, `git/write-confirm.yaml`,
+  `git/destructive-deny.yaml`). Multiple rules for the *same* action can
+  still live in one file.
 - When multiple policies match the same command, or when a compound
   command (`&&`/`;`/`|`/...) decomposes into several commands whose
-  verdicts differ, the strictest one wins: **DENY > CONFIRM > ALLOW**
-  (confirm ranks stricter than a plain allow).
+  verdicts differ, the strictest one wins: **DENY > CONFIRM > ALLOW**.
 - The default when nothing matches at all is **CONFIRM** -- a built-in
   fallback, not something you can write as a YAML `action`.
 - Omitting `functions` makes the rule a catch-all for every invocation of
@@ -267,9 +274,9 @@ when both are set, `options.confirm.message` wins.
 `to.args.anyOf` restricts a rule to commands whose argv contains at least
 one of the listed tokens (literal match only -- no regex or globs). For
 example, "`git push` alone should be CONFIRM, but `git push -f`/`--force`
-should be DENY" is two separate resources: the normal `git/allow.yaml`
-(write, `confirm.enabled: true`, no `args` condition) plus a separate DENY
-resource with `args.anyOf: ["-f", "--force"]`
+should be DENY" is two separate resources: the normal
+`git/write-confirm.yaml` (CONFIRM, no `args` condition) plus a separate
+DENY resource with `args.anyOf: ["-f", "--force"]`
 (`git/push-force-deny.yaml`). When `-f` is present both match and DENY
 wins; when it's absent the DENY resource simply doesn't match, leaving
 CONFIRM in place -- the existing strictest-wins logic handles it for
@@ -315,21 +322,20 @@ spec:
           when:
             - key: exit
               value: 0
-              action: ALLOW
-              confirm: true   # still confirm with a human even when the script says it's safe
+              action: CONFIRM   # still confirm with a human even when the script says it's safe
             # if no `when` entry matches (e.g. exit != 0), it falls back to spec.action = DENY
 ```
+
+**Precedence when a rule sets `options.customCheck`**: a matched `when`
+entry always overrides the resource's own `action` -- even downgrading a
+`DENY`/`CONFIRM` resource to a plain `ALLOW`. The override only doesn't
+apply when `customCheck` wasn't present, didn't run, or had no `when`
+match (including on timeout); in those cases the resource's own `action`
+is used as-is.
 
 > **Security note**: `customCheck` scripts run within the same trust
 > boundary as `.guard/policies/` itself (committed to and reviewed in the
 > repo). Never point it at an untrusted script.
-
-**Precedence when a rule sets both `options.confirm` and
-`options.customCheck`**: `customCheck` > `confirm` > the plain base
-action. A matched `when` entry always wins, even if it resolves to a
-plain ALLOW that overrides the rule's own `confirm.enabled: true`.
-`confirm` only takes effect when `customCheck` wasn't present, didn't
-run, or had no matching `when` entry.
 
 ## Known Limitations (v1)
 

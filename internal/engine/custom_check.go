@@ -79,15 +79,7 @@ func RunCustomCheck(cc *policy.CustomCheck) CustomCheckResult {
 		if w.Key != "exit" || w.Value != result.ExitCode {
 			continue
 		}
-		override := w.Action
-		// Mirrors Options.Confirm.Enabled: ALLOW + confirm:true gates
-		// behind a human check instead of proceeding silently. Lint
-		// rejects confirm:true on a DENY `when` entry, so this is never
-		// reached with Action == DENY.
-		if w.Confirm && w.Action == policy.ActionAllow {
-			override = policy.ActionConfirm
-		}
-		result.Override = override
+		result.Override = w.Action
 		break
 	}
 

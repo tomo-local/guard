@@ -11,12 +11,3 @@ spec:
     - to:
         label: read
         functions: [log, status, diff, show, branch, fetch]
-    - to:
-        label: write
-        functions: [add, commit, push, pull, merge]
-      options:
-        confirm:
-          enabled: true
-          message:
-            reason: "{cmd} is a write operation."
-            next: "Confirm with the user before proceeding."
