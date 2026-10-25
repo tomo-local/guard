@@ -1,0 +1,48 @@
+apiVersion: ai-guard/v1
+kind: GuardConfig
+metadata:
+  name: default-rules
+spec:
+  commandGate:
+    target:
+      module: permission
+      action: DENY
+    rules:
+      - to:
+          label: cmd-dir
+          paths:
+            anyOf:
+              - "/cmd/*"
+        message:
+          reason: "No policy matched {cmd}, which touches /cmd; denying by default."
+          next: "Add an explicit allow/deny rule under .guard/policies/ for this command."
+      - to:
+          label: src-dir
+          paths:
+            anyOf:
+              - "/src/*"
+        options:
+          confirm:
+            enabled: true
+            message:
+              reason: "{cmd} is a write operation under /src."
+              next: "Confirm with the user before proceeding."
+  repositoryGate:
+    repose:
+      - name: tomo-local/aaaaa
+        main: main
+        protected:
+          - main
+          - development
+          - staging
+      - name: tomo-local/test
+        main: development
+        protected:
+          - development
+          - production
+          - staging
+          - docs/*
+  sqlGate:
+    target:
+      module: permission
+      action: DENY

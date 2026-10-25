@@ -1,0 +1,16 @@
+apiVersion: ai-guard/v1
+kind: CommandGatePolicy
+metadata:
+  name: git-write-confirm
+spec:
+  target:
+    module: permission
+    tool: git
+  action: CONFIRM
+  rules:
+    - to:
+        label: write
+        functions: [add, commit, push, pull, merge]
+      message:
+        reason: "{cmd} is a write operation."
+        next: "Confirm with the user before proceeding."
