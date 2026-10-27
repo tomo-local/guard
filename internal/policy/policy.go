@@ -96,4 +96,20 @@ type Deps struct {
 	Runner CustomCheckRunner
 	Root   string
 	Cwd    string
+	// Repo tells which git repository and branch commands act on. Nil means
+	// unknown: rules with a `to.branch` condition then never match.
+	Repo RepoInfo
+}
+
+// RepoInfo is the port through which policies learn about the git
+// repository the command runs in. Implementations may be lazy: policies
+// only ask when a rule has a `to.branch` condition.
+type RepoInfo interface {
+	// CurrentBranch is the checked-out branch; false when unknown (not a
+	// repository, detached HEAD, ...).
+	CurrentBranch() (string, bool)
+	// BranchLabels are the labels (LabelMain, LabelProtected) the project
+	// manifest gives branch in the current repository; nil when the
+	// repository isn't described there.
+	BranchLabels(branch string) []string
 }

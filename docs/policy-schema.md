@@ -56,6 +56,8 @@ place, since a resource can only ever hold one `action`.
     args:
       anyOf: ["-f", "--force"]                     # optional
       noneOf: ["-x"]                               # optional (anyOf and/or noneOf)
+    branch:
+      anyOf: [protected]                           # optional, git only (anyOf and/or noneOf)
   options:                                         # optional
     customCheck:
       path: "./scripts/x.sh"
@@ -80,6 +82,23 @@ place, since a resource can only ever hold one `action`.
 | `to.args` | object | no | See below. |
 | `to.args.anyOf` | list of strings | one of `anyOf`/`noneOf`, if `args` is set | Non-empty strings. The rule only matches commands whose argv contains **at least one** of these tokens, literally (no regex/globs, no flag-value parsing). |
 | `to.args.noneOf` | list of strings | one of `anyOf`/`noneOf`, if `args` is set | Non-empty strings. The rule only matches commands whose argv contains **none** of these tokens. Combined with `anyOf`, both must hold. Use it to step aside for a stricter sibling policy (see [one command, one policy](#one-command-one-policy)). |
+
+| `to.branch` | object | no | git only. Restricts the rule by the **labels** of the branch the command acts on; see below. |
+| `to.branch.anyOf` | list of labels | one of `anyOf`/`noneOf`, if `branch` is set | `main` and/or `protected`. The branch must have at least one of these labels. |
+| `to.branch.noneOf` | list of labels | one of `anyOf`/`noneOf`, if `branch` is set | `main` and/or `protected`. The branch must have none of these labels (e.g. `noneOf: [protected]` is "any other branch"). |
+
+`to.branch` uses the branch labels that the manifest's
+[`repositoryGate`](manifest-schema.md#repositorygate-branch-labels) defines
+for the repository the command runs in. The branch a command acts on is
+taken from the command: for `git push [remote [refspec...]]` the
+destination of each refspec (`src:dst` -> `dst`, a leading `+` and
+`refs/heads/` dropped, `HEAD` -> the current branch, `:dst` deletes
+`dst`), or the current branch when there is none; for `git branch -d/-D/
+-m/-M` the named branches; for any other git command the current branch.
+The rule matches if **any** of those branches satisfies the condition.
+When the repository isn't described in the manifest, isn't a git
+repository, or no branch can be determined, a rule with `to.branch` does
+not match. `git push --all/--mirror` and `git -C <path>` are not tracked.
 
 How a command's subcommand is detected: the first argument that doesn't
 start with `-` is treated as the "function". This is a heuristic -- it
@@ -191,6 +210,7 @@ checks:
 | Error | `spec.rules` empty |
 | Error | `rules[].to.args` set with neither `anyOf` nor `noneOf`, or either containing an empty string |
 | Error | The same token in both `anyOf` and `noneOf` of one rule -- the rule can never match |
+| Error | `to.branch` on a policy whose tool isn't `git`, with neither `anyOf` nor `noneOf`, with a label other than `main`/`protected`, or with the same label in both lists |
 | Error | Two policies for the same tool can both match some command (see [one command, one policy](#one-command-one-policy)) |
 | Error | `rules[].options.customCheck` has neither `path` nor `command`, or has both |
 | Error | `rules[].options.customCheck.when[].key` != `"exit"` |
@@ -211,6 +231,36 @@ DENY:
 
 - `git/write-confirm.yaml`: `functions: [push]` with `args.noneOf: ["-f", "--force"]`
 - `git/push-force-deny.yaml`: `functions: [push]` with `args.anyOf: ["-f", "--force"]`
+
+Branch labels count as part of a rule's condition here, so the two
+policies below don't overlap (`anyOf: [protected]` vs `noneOf: [protected]`).
+For example, DENY changes to protected branches and CONFIRM everything
+else:
+
+```yaml
+# .guard/policies/git/protected-deny.yaml
+spec:
+  target: { module: permission, tool: git }
+  action: DENY
+  rules:
+    - to:
+        functions: [push, commit, merge, reset, rebase]
+        branch: { anyOf: [protected] }
+      message:
+        reason: "{cmd} changes a protected branch."
+        next: "Work on a feature branch and open a pull request."
+```
+
+```yaml
+# .guard/policies/git/other-branches-confirm.yaml
+spec:
+  target: { module: permission, tool: git }
+  action: CONFIRM
+  rules:
+    - to:
+        functions: [push, commit, merge, reset, rebase]
+        branch: { noneOf: [protected] }
+```
 
 ## Examples
 

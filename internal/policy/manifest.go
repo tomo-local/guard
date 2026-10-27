@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"path"
 
 	"gopkg.in/yaml.v3"
 
@@ -18,8 +19,9 @@ const manifestPriority = 100
 
 // GuardManifest is the project-wide rule file. Its commandGate section
 // restricts commands by the file paths they touch, as a fallback behind the
-// per-tool CommandGatePolicy files. repositoryGate and sqlGate are read but
-// not enforced yet.
+// per-tool CommandGatePolicy files. Its repositoryGate section labels
+// branches for the `to.branch` conditions of CommandGatePolicy rules; sqlGate
+// is read but not enforced yet.
 type GuardManifest struct {
 	APIVersion string       `yaml:"apiVersion" validate:"eq=ai-guard/v1"`
 	Kind       string       `yaml:"kind" validate:"eq=GuardManifest"`
@@ -33,9 +35,53 @@ type GuardManifest struct {
 }
 
 type ManifestSpec struct {
-	CommandGate    *CommandGateSection `yaml:"commandGate,omitempty"`
-	RepositoryGate any                 `yaml:"repositoryGate,omitempty" validate:"-"`
-	SQLGate        any                 `yaml:"sqlGate,omitempty" validate:"-"`
+	CommandGate    *CommandGateSection    `yaml:"commandGate,omitempty"`
+	RepositoryGate *RepositoryGateSection `yaml:"repositoryGate,omitempty"`
+	SQLGate        any                    `yaml:"sqlGate,omitempty" validate:"-"`
+}
+
+// RepositoryGateSection describes the git repositories the project works
+// with and which of their branches carry the labels (LabelMain,
+// LabelProtected) that CommandGatePolicy rules can match with `to.branch`.
+// It makes no decisions itself.
+type RepositoryGateSection struct {
+	Repose []RepoSpec `yaml:"repose" validate:"dive"`
+}
+
+// RepoSpec labels the branches of one repository. Name is the repository's
+// path on its host as seen in the origin URL, e.g. "owner/name".
+type RepoSpec struct {
+	Name      string   `yaml:"name" validate:"required"`
+	Main      string   `yaml:"main,omitempty"`
+	Protected []string `yaml:"protected,omitempty" validate:"omitempty,dive,required"`
+}
+
+// BranchLabels returns the labels the manifest gives branch in the
+// repository named repo: LabelMain when it is the main branch, LabelProtected
+// when it matches a protected pattern (path.Match, so "*" stays within one
+// path segment). nil when the repository isn't described.
+func (m *GuardManifest) BranchLabels(repo, branch string) []string {
+	rg := m.Spec.RepositoryGate
+	if rg == nil || branch == "" {
+		return nil
+	}
+	for _, r := range rg.Repose {
+		if r.Name != repo {
+			continue
+		}
+		var labels []string
+		if r.Main != "" && r.Main == branch {
+			labels = append(labels, LabelMain)
+		}
+		for _, pat := range r.Protected {
+			if ok, err := path.Match(pat, branch); err == nil && ok {
+				labels = append(labels, LabelProtected)
+				break
+			}
+		}
+		return labels
+	}
+	return nil
 }
 
 // CommandGateSection holds path-based command rules.

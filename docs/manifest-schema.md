@@ -29,7 +29,11 @@ spec:
         message:               # optional, English, `{cmd}` is the only placeholder
           reason: "..."
           next: "..."
-  repositoryGate: {...}        # read, not enforced yet (lint warns)
+  repositoryGate:              # optional: labels branches for `to.branch` in policies
+    repose:
+      - name: owner/name       # required, matched against the origin URL
+        main: main             # optional: gets the `main` label
+        protected: [main, staging, "docs/*"]   # optional: get the `protected` label
   sqlGate: {...}               # read, not enforced yet (lint warns)
 ```
 
@@ -77,6 +81,26 @@ ancestors.
 - The directory `guard` runs in comes from the process, not the hook
   payload.
 
+## `repositoryGate`: branch labels
+
+`repositoryGate` makes no decisions on its own. It tells guard which
+branches of which repository are special, by giving them **labels**; the
+policy rules then say what to do with them (see
+[`to.branch`](policy-schema.md#to-match-condition)).
+
+- guard finds the repository by running `git remote get-url origin` in the
+  directory it runs in and comparing the path (`owner/name`, any
+  `.git` suffix removed; `git@host:owner/name`, `https://host/owner/name`
+  and `ssh://` URLs all work) with `repose[].name`. A repository that is
+  not listed, or no git repository at all, has no labels, and rules with a
+  `to.branch` condition do not match there.
+- Labels: `main` (the branch equal to `main:`) and `protected` (any branch
+  matching a `protected:` pattern; `*` stays within one path segment, so
+  `docs/*` matches `docs/guide` but not `docs/a/b`). A branch can have both.
+- Which branch a command acts on is worked out from the command (see
+  [`to.branch`](policy-schema.md#to-match-condition)); `git` is only run
+  when a rule actually has a `to.branch` condition.
+
 ## `guard lint`
 
 | Severity | Check |
@@ -86,7 +110,9 @@ ancestors.
 | Error | `target.action` or a rule's `action` not one of `ALLOW`/`DENY`/`CONFIRM` |
 | Error | A `paths.anyOf` entry that isn't a valid pattern |
 | Error | More than one `GuardManifest` |
-| Warning | `repositoryGate` / `sqlGate` has content (not enforced yet) |
+| Error | `repositoryGate.repose[].name` missing, not `owner/name`-shaped, or listed twice |
+| Error | A `repose[].protected` entry that isn't a valid pattern, or is empty |
+| Warning | `sqlGate` has content (not enforced yet) |
 
 ## Example
 

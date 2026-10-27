@@ -27,7 +27,11 @@ spec:
         message:               # 任意、英語、使えるプレースホルダは `{cmd}` のみ
           reason: "..."
           next: "..."
-  repositoryGate: {...}        # 読み込むが未対応（lint が warning）
+  repositoryGate:              # 任意：ポリシーの `to.branch` 用にブランチへラベルを付ける
+    repose:
+      - name: owner/name       # 必須、origin の URL と照合する
+        main: main             # 任意：`main` ラベルが付く
+        protected: [main, staging, "docs/*"]   # 任意：`protected` ラベルが付く
   sqlGate: {...}               # 読み込むが未対応（lint が warning）
 ```
 
@@ -65,6 +69,21 @@ spec:
   誤検知した場合は rule の action（多くは CONFIRM か DENY）になる。
 - `guard` を実行したディレクトリはプロセスから取り、hook payload の値は使わない。
 
+## `repositoryGate`：ブランチのラベル
+
+`repositoryGate` 自体は判定をしない。どのリポジトリのどのブランチが特別かを**ラベル**で guard に伝え、
+そのラベルをどう扱うかはポリシーの rule が決める（[`to.branch`](policy-schema.md#toマッチ条件) を参照）。
+
+- guard は、実行したディレクトリで `git remote get-url origin` を実行し、そのパス（`owner/name`。
+  末尾の `.git` は除く。`git@host:owner/name`、`https://host/owner/name`、`ssh://` のどれも使える）を
+  `repose[].name` と照合してリポジトリを特定する。載っていないリポジトリや git 管理下でない場合はラベルが無く、
+  `to.branch` を持つ rule はそこではマッチしない。
+- ラベル：`main`（`main:` と等しいブランチ）と `protected`（`protected:` のパターンのどれかにマッチするブランチ。
+  `*` は1つのパスセグメント内だけなので、`docs/*` は `docs/guide` にマッチし `docs/a/b` にはマッチしない）。
+  1つのブランチが両方を持つこともある。
+- コマンドがどのブランチに作用するかはコマンドから決める（[`to.branch`](policy-schema.md#toマッチ条件) を参照）。
+  git を実行するのは、rule が `to.branch` を持つときだけ。
+
 ## `guard lint`
 
 | 重大度 | チェック |
@@ -74,7 +93,9 @@ spec:
 | エラー | `target.action` または rule の `action` が `ALLOW`/`DENY`/`CONFIRM` のいずれでもない |
 | エラー | `paths.anyOf` に不正なパターンがある |
 | エラー | `GuardManifest` が2つ以上ある |
-| 警告 | `repositoryGate` / `sqlGate` に中身がある（未対応） |
+| エラー | `repositoryGate.repose[].name` が無い、`owner/name` の形でない、または重複している |
+| エラー | `repose[].protected` に不正なパターン、または空の要素がある |
+| 警告 | `sqlGate` に中身がある（未対応） |
 
 ## 例
 

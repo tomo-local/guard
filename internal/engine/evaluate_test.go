@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -606,5 +607,52 @@ func TestEvaluateCommand_ManifestIsTheFallbackBehindToolPolicies(t *testing.T) {
 	got = e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "cat", Args: []string{"README.md"}})
 	if !got.Default {
 		t.Fatalf("expected the default decision, got %+v", got)
+	}
+}
+
+// repoStub is a RepoInfo for engine tests.
+type repoStub struct{ branch string }
+
+func (r repoStub) CurrentBranch() (string, bool) { return r.branch, r.branch != "" }
+func (r repoStub) BranchLabels(b string) []string {
+	if b == "main" {
+		return []string{policy.LabelMain, policy.LabelProtected}
+	}
+	return nil
+}
+
+func TestEvaluateCommand_ProtectedBranchPolicy(t *testing.T) {
+	spec := func(action policy.Action, b *policy.LabelsMatch) policy.Spec {
+		return policy.Spec{
+			Target: policy.Target{Module: policy.ModulePermission, Tool: "git"},
+			Action: action,
+			Rules:  []policy.Rule{{To: policy.To{Functions: []string{"push"}, Branch: b}}},
+		}
+	}
+	build := func(branch string) *Evaluator {
+		deps := policy.Deps{Repo: repoStub{branch: branch}}
+		return NewEvaluator([]policy.Policy{
+			policy.NewCommandGate("git/protected-deny.yaml", spec(policy.ActionDeny, &policy.LabelsMatch{AnyOf: []string{policy.LabelProtected}}), deps),
+			policy.NewCommandGate("git/push-confirm.yaml", spec(policy.ActionConfirm, &policy.LabelsMatch{NoneOf: []string{policy.LabelProtected}}), deps),
+		})
+	}
+
+	if got := build("main").EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}}); got.Action != policy.ActionDeny {
+		t.Fatalf("push on the protected main branch: got %+v, want DENY", got)
+	}
+	if got := build("feature").EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}}); got.Action != policy.ActionConfirm {
+		t.Fatalf("push on a feature branch: got %+v, want CONFIRM", got)
+	}
+	if got := build("feature").EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push", "origin", "main"}}); got.Action != policy.ActionDeny {
+		t.Fatalf("pushing a feature branch to main: got %+v, want DENY", got)
+	}
+
+	for _, i := range Lint([]policy.Policy{
+		policy.NewCommandGate("git/protected-deny.yaml", spec(policy.ActionDeny, &policy.LabelsMatch{AnyOf: []string{policy.LabelProtected}}), policy.Deps{}),
+		policy.NewCommandGate("git/push-confirm.yaml", spec(policy.ActionConfirm, &policy.LabelsMatch{NoneOf: []string{policy.LabelProtected}}), policy.Deps{}),
+	}) {
+		if strings.Contains(i.Message, "overlaps with") {
+			t.Fatalf("expected the two policies not to overlap, got %v", i)
+		}
 	}
 }

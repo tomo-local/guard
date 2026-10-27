@@ -1,6 +1,10 @@
 package policy
 
-import "fmt"
+import (
+	"fmt"
+	"path"
+	"strings"
+)
 
 // Lint checks the manifest on its own: field constraints, commandGate
 // patterns, and a warning for sections that are read but not enforced yet.
@@ -22,8 +26,22 @@ func (m *GuardManifest) Lint() []Issue {
 		}
 	}
 
-	if hasContent(m.Spec.RepositoryGate) {
-		c.Warnf("spec.repositoryGate: not enforced yet; its content is ignored")
+	if rg := m.Spec.RepositoryGate; rg != nil {
+		seen := map[string]bool{}
+		for i, r := range rg.Repose {
+			if r.Name != "" && !validRepoName(r.Name) {
+				c.Errorf("spec.repositoryGate.repose[%d].name: %q must look like owner/name", i, r.Name)
+			}
+			if seen[r.Name] && r.Name != "" {
+				c.Errorf("spec.repositoryGate.repose[%d].name: %q is listed more than once", i, r.Name)
+			}
+			seen[r.Name] = true
+			for j, pat := range r.Protected {
+				if pat != "" && !validBranchPattern(pat) {
+					c.Errorf("spec.repositoryGate.repose[%d].protected[%d]: %q is not a valid branch pattern", i, j, pat)
+				}
+			}
+		}
 	}
 	if hasContent(m.Spec.SQLGate) {
 		c.Warnf("spec.sqlGate: not enforced yet; its content is ignored")
@@ -55,6 +73,29 @@ func lintManifestSet(policies []Policy) []Issue {
 		})
 	}
 	return issues
+}
+
+// validRepoName accepts "owner/name" (and deeper paths such as GitLab
+// subgroups): at least two non-empty segments, no spaces.
+func validRepoName(name string) bool {
+	if strings.ContainsAny(name, " \t") {
+		return false
+	}
+	parts := strings.Split(name, "/")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func validBranchPattern(pat string) bool {
+	_, err := path.Match(pat, "")
+	return err == nil
 }
 
 // hasContent reports whether a decoded YAML value holds anything.

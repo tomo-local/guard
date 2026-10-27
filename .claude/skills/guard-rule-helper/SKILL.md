@@ -38,6 +38,9 @@ spec:
         args:
           anyOf: ["-f", "--force"]    # optional: argv must contain one of these (literal match, no regex/globs)
           noneOf: ["-x"]              # optional: argv must contain none of these (anyOf and/or noneOf)
+        branch:                       # optional, git only: labels of the branch the command acts on
+          anyOf: [protected]          # `main` / `protected`, defined by the manifest's repositoryGate
+          # noneOf: [protected]       # (anyOf and/or noneOf) -- "any other branch"
       options:
         customCheck:                 # optional, delegates to a script (see below)
           path: "./scripts/x.sh"     # exactly one of path/command
@@ -89,6 +92,14 @@ Key rules to follow:
   operation and is denied."`
 - Directory convention: `.guard/policies/<tool>/<short-action-or-qualifier>.yaml`
   (e.g. `git/allow.yaml`, `rm/deny.yaml`, `git/push-force-deny.yaml`).
+
+- **Branch rules** ("nothing may push to a protected branch") use
+  `to.branch` with the labels the manifest's `repositoryGate` defines;
+  don't hard-code branch names in policies. If the manifest has no
+  `repositoryGate` entry for the repository, add one (`name: owner/name`
+  as in the origin URL, `main:`, `protected:`). Pair a `branch.anyOf`
+  policy with a `branch.noneOf` one when the same functions need different
+  actions, so they don't overlap.
 
 ## The project manifest (`.guard/manifest.yaml`)
 

@@ -16,6 +16,16 @@ func loadPolicies(rulesDir, manifestPath string, lenient bool) ([]policy.Policy,
 	deps := policy.Deps{Runner: procRunner{}, Root: projectRoot(manifestPath)}
 	deps.Cwd, _ = os.Getwd()
 
+	// The manifest is read first: it labels branches, which the policies
+	// loaded next consult through deps.Repo.
+	manifest, err := loadManifest(manifestPath, deps, lenient)
+	if err != nil {
+		return nil, err
+	}
+	if gm, ok := manifest.(*policy.GuardManifest); ok {
+		deps.Repo = &gitRepo{cwd: deps.Cwd, manifest: gm}
+	}
+
 	load := policy.LoadDir
 	if lenient {
 		load = policy.LoadDirForLint
@@ -24,21 +34,25 @@ func loadPolicies(rulesDir, manifestPath string, lenient bool) ([]policy.Policy,
 	if err != nil {
 		return nil, err
 	}
+	if manifest != nil {
+		policies = append(policies, manifest)
+	}
+	return policies, nil
+}
 
-	if _, statErr := os.Stat(manifestPath); statErr != nil {
-		if errors.Is(statErr, fs.ErrNotExist) {
-			return policies, nil
+// loadManifest loads the project manifest; nil (and no error) when the file
+// doesn't exist.
+func loadManifest(manifestPath string, deps policy.Deps, lenient bool) (policy.Policy, error) {
+	if _, err := os.Stat(manifestPath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
 		}
-		return nil, statErr
-	}
-	if lenient {
-		return append(policies, policy.LoadFileForLint(manifestPath, deps)), nil
-	}
-	m, err := policy.LoadFile(manifestPath, deps)
-	if err != nil {
 		return nil, err
 	}
-	return append(policies, m), nil
+	if lenient {
+		return policy.LoadFileForLint(manifestPath, deps), nil
+	}
+	return policy.LoadFile(manifestPath, deps)
 }
 
 // projectRoot is the directory that holds .guard/: the manifest's parent's

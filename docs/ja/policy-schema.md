@@ -55,6 +55,8 @@ lintルールで後から弾く必要があった。`CONFIRM` を `spec.action` 
     args:
       anyOf: ["-f", "--force"]                     # 任意
       noneOf: ["-x"]                               # 任意（anyOf と noneOf の片方または両方）
+    branch:
+      anyOf: [protected]                           # 任意、git のみ（anyOf と noneOf の片方または両方）
   options:                                         # 任意
     customCheck:
       path: "./scripts/x.sh"
@@ -79,6 +81,19 @@ lintルールで後から弾く必要があった。`CONFIRM` を `spec.action` 
 | `to.args` | オブジェクト | 任意 | 下記参照。 |
 | `to.args.anyOf` | string配列 | `args`を設定する場合は `anyOf`/`noneOf` のどちらか | 空でない文字列。argvにこのトークンのいずれかが**リテラル一致**で含まれる場合にのみマッチする（正規表現/glob不可、値を取るオプションの引数部分のパースも行わない）。 |
 | `to.args.noneOf` | string配列 | `args`を設定する場合は `anyOf`/`noneOf` のどちらか | 空でない文字列。argvにこのトークンが**1つも含まれない**場合にのみマッチする。`anyOf` と併用した場合は両方を満たす必要がある。より厳しい別のポリシーに道を譲るために使う（[1コマンド1ポリシー](#1コマンド1ポリシー)を参照）。 |
+
+| `to.branch` | オブジェクト | 任意 | git のみ。コマンドが作用するブランチの**ラベル**でruleを絞り込む。下記参照。 |
+| `to.branch.anyOf` | ラベルの配列 | `branch`を設定する場合は `anyOf`/`noneOf` のどちらか | `main` と `protected` の一方または両方。ブランチがこのラベルを少なくとも1つ持つこと。 |
+| `to.branch.noneOf` | ラベルの配列 | `branch`を設定する場合は `anyOf`/`noneOf` のどちらか | `main` と `protected` の一方または両方。ブランチがこのラベルを1つも持たないこと（`noneOf: [protected]` は「それ以外のブランチ」）。 |
+
+`to.branch` は、コマンドを実行したリポジトリについて manifest の
+[`repositoryGate`](manifest-schema.md#repositorygateブランチのラベル) が定義したブランチのラベルを使う。
+コマンドが作用するブランチはコマンドから決める：`git push [remote [refspec...]]` では各 refspec の宛先
+（`src:dst` は `dst`、先頭の `+` と `refs/heads/` は除く、`HEAD` は現在のブランチ、`:dst` は `dst` の削除）、
+refspec が無ければ現在のブランチ。`git branch -d/-D/-m/-M` では指定されたブランチ。その他の git コマンドでは
+現在のブランチ。そのブランチの**いずれか**が条件を満たせば rule はマッチする。manifest に載っていないリポジトリ、
+git 管理下でない場合、ブランチを決められない場合、`to.branch` を持つ rule はマッチしない。
+`git push --all/--mirror` と `git -C <path>` は追跡しない。
 
 サブコマンドの検出方法: 先頭の `-` で始まらない最初の引数を「function」と
 みなすヒューリスティック。値を取るフラグの直後の引数を誤って function と
@@ -189,6 +204,7 @@ Istio の `action: CUSTOM` に相当する仕組み。判定の一部を外部�
 | エラー | `spec.rules` が空 |
 | エラー | `rules[].to.args` が設定されているが `anyOf` も `noneOf` も無い、またはどちらかが空文字列を含む |
 | エラー | 1つのruleの `anyOf` と `noneOf` に同じトークンがある —— そのruleは絶対にマッチしない |
+| エラー | tool が `git` でないポリシーの `to.branch`、`anyOf` も `noneOf` も無い `to.branch`、`main`/`protected` 以外のラベル、または同じラベルが両方のリストにある |
 | エラー | 同じ tool の2つのポリシーが、あるコマンドに両方マッチし得る（[1コマンド1ポリシー](#1コマンド1ポリシー)を参照） |
 | エラー | `rules[].options.customCheck` に `path` と `command` のどちらも無い、または両方ある |
 | エラー | `rules[].options.customCheck.when[].key` が `"exit"` と異なる |
@@ -206,6 +222,35 @@ Istio の `action: CUSTOM` に相当する仕組み。判定の一部を外部�
 
 - `git/write-confirm.yaml`: `functions: [push]` に `args.noneOf: ["-f", "--force"]`
 - `git/push-force-deny.yaml`: `functions: [push]` に `args.anyOf: ["-f", "--force"]`
+
+ブランチのラベルは、ここではruleの条件の一部として扱われるので、次の2つのポリシーは重ならない
+（`anyOf: [protected]` と `noneOf: [protected]`）。たとえば、保護ブランチへの変更は DENY、
+それ以外は CONFIRM にする場合：
+
+```yaml
+# .guard/policies/git/protected-deny.yaml
+spec:
+  target: { module: permission, tool: git }
+  action: DENY
+  rules:
+    - to:
+        functions: [push, commit, merge, reset, rebase]
+        branch: { anyOf: [protected] }
+      message:
+        reason: "{cmd} changes a protected branch."
+        next: "Work on a feature branch and open a pull request."
+```
+
+```yaml
+# .guard/policies/git/other-branches-confirm.yaml
+spec:
+  target: { module: permission, tool: git }
+  action: CONFIRM
+  rules:
+    - to:
+        functions: [push, commit, merge, reset, rebase]
+        branch: { noneOf: [protected] }
+```
 
 ## 例
 

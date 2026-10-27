@@ -352,6 +352,34 @@ spec:
         next: "Suggest a non-destructive alternative, or ask the user to run it themselves."
 ```
 
+### ブランチ単位のマッチ（`to.branch`）
+
+manifest の `repositoryGate` がリポジトリごとにブランチへラベル（`main`、`protected`）を付け、
+ruleの `to.branch` がそのラベルを使う。これにより、「保護ブランチは変更させない」を、
+ポリシーごとにブランチ名を書かずに表現できる。[ブランチのラベル](manifest-schema.md#repositorygateブランチのラベル)と
+[`to.branch`](policy-schema.md#toマッチ条件)を参照。
+
+```yaml
+# .guard/manifest.yaml
+spec:
+  repositoryGate:
+    repose:
+      - name: owner/name
+        main: main
+        protected: [main, staging, "docs/*"]
+```
+
+```yaml
+# .guard/policies/git/protected-deny.yaml
+spec:
+  target: { module: permission, tool: git }
+  action: DENY
+  rules:
+    - to:
+        functions: [push, commit, merge, reset, rebase]
+        branch: { anyOf: [protected] }
+```
+
 ### カスタムチェック（`options.customCheck`）
 
 Istio の `action: CUSTOM`（外部認可委譲）に相当する仕組み。マッチしたルールに紐づけて
@@ -391,6 +419,9 @@ spec:
 
 - manifest のパスマッチはコマンド内の `cd` を追跡せず、パスに見える引数は何でもパスとして扱う。
   [GuardManifest](manifest-schema.md#既知の制限)を参照。
+- ブランチ条件（`to.branch`）は、`guard` を実行したディレクトリで `git remote get-url origin` を実行して
+  リポジトリを、コマンド（`git push` の refspec、`git branch -d <name>`）または現在のブランチからブランチを決める。
+  `git push --all/--mirror` と `git -C <path>` は追跡しない。manifest の `sqlGate` は読み込むが未対応。
 - 対象スコープは **Bash コマンドのみ**。
 - サブコマンド（`functions`）の判定は「先頭の `-` で始まらない最初の引数」というヒューリスティック。
   `git -C <path> push` のように値を取るフラグの直後の引数を誤って function とみなす場合がある。
