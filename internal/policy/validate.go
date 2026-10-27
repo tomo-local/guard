@@ -31,7 +31,7 @@ func newValidator() *validator.Validate {
 
 // validateStruct runs struct-tag validation on p and reports every failure
 // through c.
-func validateStruct(c *IssueCollector, p *CommandGatePolicy) {
+func validateStruct(c *IssueCollector, p any) {
 	err := validate.Struct(p)
 	if err == nil {
 		return

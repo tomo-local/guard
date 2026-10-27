@@ -181,7 +181,7 @@ Istio の `action: CUSTOM` に相当する仕組み。判定の一部を外部�
 | 深刻度 | チェック内容 |
 |---|---|
 | エラー | `apiVersion` が `"ai-guard/v1"` と異なる |
-| エラー | `kind` が `"CommandGatePolicy"` と異なる |
+| エラー | `kind` が既知の kind（`CommandGatePolicy`、または `GuardManifest` —— [manifest-schema.md](manifest-schema.md) を参照）ではない。そのファイルは評価されない |
 | エラー | `metadata.name` が空 |
 | エラー | `spec.target.module` が `"permission"` と異なる |
 | エラー | `spec.target.tool` が空 |

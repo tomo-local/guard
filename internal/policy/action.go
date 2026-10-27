@@ -32,3 +32,17 @@ var ValidActions = []Action{ActionAllow, ActionDeny, ActionConfirm}
 
 // DefaultAction is applied when no policy rule matches a given command.
 const DefaultAction = ActionConfirm
+
+// ActionRank ranks actions for strictest-wins: DENY > CONFIRM > ALLOW.
+func ActionRank(a Action) int {
+	switch a {
+	case ActionDeny:
+		return 3
+	case ActionConfirm:
+		return 2
+	case ActionAllow:
+		return 1
+	default:
+		return 0
+	}
+}

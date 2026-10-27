@@ -149,6 +149,11 @@ echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | guard check
   0. If `tool_name` isn't `Bash`, it prints `{}` and does nothing (out of
   scope).
 
+A command is checked against the per-tool policies first. Only when none
+of them matches does the project manifest (`.guard/manifest.yaml`, see
+[GuardManifest](docs/manifest-schema.md)) get to decide, by the file paths
+the command touches (e.g. deny anything under `/cmd`).
+
 Every decision is recorded to `.guard/logs/check/YYYY-MM-DD.jsonl` (JSON
 Lines, append-only, one decision per line, one file per UTC day).
 
@@ -245,6 +250,7 @@ flags every time. Precedence is **`-flag` > env var > built-in default**.
 | `GUARD_LOG_PATH` | `init`/`check`/`report` | `-log` | `.guard/logs/check` (one `YYYY-MM-DD.jsonl` per UTC day; `init` creates this directory) |
 | `GUARD_RECORD_LOG_PATH` | `init`/`record`/`report` | `-log` (`record`) / `-record-log` (`init`, `report`) | `.guard/logs/record` (one `YYYY-MM-DD.jsonl` per UTC day) |
 | `GUARD_CONFIG_PATH` | `init`/`report` | `-config` | `.guard/config.yaml` (`init` writes it; `report` only reads it) |
+| `GUARD_MANIFEST_PATH` | `check`/`lint` | `-manifest` | `.guard/manifest.yaml` (optional; see [GuardManifest](docs/manifest-schema.md)) |
 
 ```bash
 GUARD_POLICIES_DIR=./some/other/dir guard lint
@@ -420,6 +426,9 @@ is used as-is.
 
 ## Known Limitations (v1)
 
+- The manifest's path matching doesn't follow `cd` inside a command and
+  treats any path-shaped argument as a path; see
+  [GuardManifest](docs/manifest-schema.md#known-limitations).
 - Scope is **Bash commands only**.
 - Subcommand (`functions`) detection is a heuristic: "the first argument
   that doesn't start with `-`". `git -C <path> push` mistakes `<path>`

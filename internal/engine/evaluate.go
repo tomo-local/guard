@@ -31,18 +31,7 @@ type Decision struct {
 
 const defaultNext = "Review the command and confirm with the user before proceeding."
 
-func severityRank(a policy.Action) int {
-	switch a {
-	case policy.ActionDeny:
-		return 3
-	case policy.ActionConfirm:
-		return 2
-	case policy.ActionAllow:
-		return 1
-	default:
-		return 0
-	}
-}
+func severityRank(a policy.Action) int { return policy.ActionRank(a) }
 
 // Evaluator holds the command-evaluating policies loaded for a run of
 // `guard check`, ordered by priority, and evaluates commands against them.

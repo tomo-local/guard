@@ -568,3 +568,43 @@ func TestEvaluateCommand_NoneOfSplitsPushBetweenPolicies(t *testing.T) {
 		}
 	}
 }
+
+// manifestStub is a command evaluator at the manifest's priority, matching
+// any command that touches "cmd/".
+type manifestStub struct{}
+
+func (manifestStub) Meta() policy.Meta {
+	return policy.Meta{Kind: "GuardManifest", Source: ".guard/manifest.yaml"}
+}
+func (manifestStub) Lint() []policy.Issue { return nil }
+func (manifestStub) Priority() int        { return 100 }
+func (manifestStub) Evaluate(cmd shellcmd.SimpleCommand) (policy.Verdict, bool) {
+	for _, a := range cmd.Args {
+		if a == "cmd/a.go" {
+			return policy.Verdict{Action: policy.ActionDeny, Reason: "touches cmd", Source: ".guard/manifest.yaml"}, true
+		}
+	}
+	return policy.Verdict{}, false
+}
+
+func TestEvaluateCommand_ManifestIsTheFallbackBehindToolPolicies(t *testing.T) {
+	e := NewEvaluator(append(samplePolicies(), manifestStub{}))
+
+	// No tool policy for cat: the manifest decides.
+	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "cat", Args: []string{"cmd/a.go"}})
+	if got.Action != policy.ActionDeny || got.Default || len(got.MatchedPolicies) != 1 || got.MatchedPolicies[0] != ".guard/manifest.yaml" {
+		t.Fatalf("expected the manifest to decide DENY, got %+v", got)
+	}
+
+	// A tool policy matches (git log -> ALLOW): the manifest is not consulted.
+	got = e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"log", "cmd/a.go"}})
+	if got.Action != policy.ActionAllow {
+		t.Fatalf("expected the tool policy's ALLOW to win over the manifest, got %+v", got)
+	}
+
+	// Neither matches: the default applies.
+	got = e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "cat", Args: []string{"README.md"}})
+	if !got.Default {
+		t.Fatalf("expected the default decision, got %+v", got)
+	}
+}

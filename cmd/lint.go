@@ -13,6 +13,7 @@ const lintUsage = `Usage:
 
 Options:
   -rules string   policy directory to lint (default ".guard/policies", env GUARD_POLICIES_DIR)
+  -manifest string  project manifest to lint (default ".guard/manifest.yaml", env GUARD_MANIFEST_PATH)
   -color string   colorize output: auto, always, never (default "auto"; auto honors NO_COLOR)
 
 Precedence: -flag > env var > built-in default.
@@ -27,13 +28,14 @@ func (c *Cmd) RunLint(args []string) error {
 	fs := flag.NewFlagSet("lint", flag.ContinueOnError)
 	fs.SetOutput(c.Stderr)
 	rulesDir := fs.String("rules", defaultPoliciesDir(), "policy directory to lint (env GUARD_POLICIES_DIR)")
+	manifest := fs.String("manifest", defaultManifestPath(), "project manifest to lint (env GUARD_MANIFEST_PATH)")
 	color := fs.String("color", "auto", "colorize output: auto, always, never (auto honors NO_COLOR)")
 	fs.Usage = func() { fmt.Fprint(c.Stderr, lintUsage) }
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	policies, err := policy.LoadDirForLint(*rulesDir, policy.Deps{})
+	policies, err := loadPolicies(*rulesDir, *manifest, true)
 	if err != nil {
 		return fmt.Errorf("load policies: %w", err)
 	}
