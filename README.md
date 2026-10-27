@@ -247,6 +247,15 @@ flags every time. Precedence is **`-flag` > env var > built-in default**.
 GUARD_POLICIES_DIR=./some/other/dir guard lint
 ```
 
+> **Breaking change**: `GUARD_LOG_PATH`/`GUARD_RECORD_LOG_PATH` (and
+> `-log`/`-record-log`) used to name a single `.jsonl` *file*
+> (`.guard/logs/check.jsonl`); they now name a *directory* that holds one
+> `YYYY-MM-DD.jsonl` file per UTC day. If you have either set to the old
+> file path, update it to a directory (e.g. `.guard/logs/check`) --
+> pointing it at the old file path makes `guard check`/`guard record`
+> silently stop logging and `guard init` fail outright, since `mkdir` on
+> an existing file always fails.
+
 ## Writing Policies
 
 Policies are Kubernetes-style manifests modeled on

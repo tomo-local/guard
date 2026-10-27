@@ -222,6 +222,16 @@ guard report --format duckdb                 # guard initで設定したDBパス
 GUARD_POLICIES_DIR=./some/other/dir guard lint
 ```
 
+> **破壊的変更**: `GUARD_LOG_PATH`/`GUARD_RECORD_LOG_PATH`（および
+> `-log`/`-record-log`）は以前、単一の `.jsonl` **ファイル**
+> （`.guard/logs/check.jsonl`）を指していましたが、現在はUTC日付ごとに
+> `YYYY-MM-DD.jsonl` を1つ持つ**ディレクトリ**を指すようになりました。
+> どちらかが旧ファイルパスに設定されている場合は、ディレクトリパス
+> （例: `.guard/logs/check`）に更新してください -- 旧ファイルパスのままだと
+> `guard check`/`guard record` はログ書き込みがサイレントに止まり、
+> `guard init` は完全に失敗します（既存ファイルに対する `mkdir` は必ず
+> 失敗するため）。
+
 ## ポリシーの書き方
 
 ポリシーは [Istio の `AuthorizationPolicy`](https://istio.io/latest/docs/reference/config/security/authorization-policy/)

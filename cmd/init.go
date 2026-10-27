@@ -20,7 +20,7 @@ Options:
   -duckdb               enable/disable "guard report --format duckdb" (true/false)
   -duckdb-path string    DuckDB database file path when -duckdb is enabled (default ".guard/guard.duckdb")
 
-Precedence for -rules/-log/-config: -flag > env var > built-in default.
+Precedence for -rules/-log/-record-log/-config: -flag > env var > built-in default.
 
 Creates the logs directory, and seeds the policies directory with this
 CLI's own starter policies -- but only if it has no policy manifests

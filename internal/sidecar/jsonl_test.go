@@ -3,6 +3,7 @@ package sidecar
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -65,6 +66,25 @@ func TestAppendCheckLog_DateBoundaryIsUTCNotLocal(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "2026-10-20.jsonl")); err == nil {
 		t.Fatalf("did not expect a 2026-10-20.jsonl file (that's the local, not UTC, day)")
+	}
+}
+
+func TestAppendCheckLog_OldFilePathGivesClearError(t *testing.T) {
+	dir := t.TempDir()
+	// Simulate a pre-split GUARD_LOG_PATH still pointing at the old
+	// single-file layout (.guard/logs/check.jsonl) -- the log "dir" is
+	// actually an existing regular file.
+	oldFilePath := filepath.Join(dir, "check.jsonl")
+	if err := os.WriteFile(oldFilePath, []byte(`{}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err := AppendCheckLog(oldFilePath, CheckLogEntry{Timestamp: time.Now(), Action: "ALLOW"})
+	if err == nil {
+		t.Fatal("expected an error when the log dir is actually an existing file")
+	}
+	if !strings.Contains(err.Error(), "already exists as a file") {
+		t.Fatalf("expected a hint about the old file-based layout, got: %v", err)
 	}
 }
 
