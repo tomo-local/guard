@@ -50,17 +50,21 @@ type Report struct {
 }
 
 // ToolFunctionCount is one row of Report.TopDenyConfirm: how often a
-// given tool+function combination was decided DENY or CONFIRM.
+// given tool+function combination was decided DENY or CONFIRM. JSON
+// tags keep RenderJSON's output snake_case throughout, matching
+// jsonReport's own fields.
 type ToolFunctionCount struct {
-	Tool, Function          string
-	DenyCount, ConfirmCount int
+	Tool         string `json:"tool"`
+	Function     string `json:"function"`
+	DenyCount    int    `json:"deny_count"`
+	ConfirmCount int    `json:"confirm_count"`
 }
 
 // DailyCount is one day's worth of check.jsonl entries, broken down by
 // final decision action.
 type DailyCount struct {
-	Date   string // YYYY-MM-DD, UTC
-	Counts map[string]int
+	Date   string         `json:"date"` // YYYY-MM-DD, UTC
+	Counts map[string]int `json:"counts"`
 }
 
 // Analyze reads checkLogPath and recordLogPath and builds a Report.

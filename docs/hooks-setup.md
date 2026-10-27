@@ -42,7 +42,7 @@ existing `PreToolUse`/`PostToolUse` arrays rather than replacing them.
   and appends what actually happened (command, raw stdout/stderr,
   whether it was interrupted) to `.guard/logs/record.jsonl`. It never
   blocks anything and always exits 0 -- it's purely for later analysis
-  (`guard report`, once that ships).
+  (see `guard report`).
 
 ## Command resolution
 
