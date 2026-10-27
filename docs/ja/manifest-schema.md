@@ -32,7 +32,17 @@ spec:
       - name: owner/name       # 必須、origin の URL と照合する
         main: main             # 任意：`main` ラベルが付く
         protected: [main, staging, "docs/*"]   # 任意：`protected` ラベルが付く
-  sqlGate: {...}               # 読み込むが未対応（lint が warning）
+  sqlGate:                     # 任意：全環境に効く SQL のルール
+    target:
+      clients: [psql, mysql]   # 任意。省略時は両方
+      action: DENY             # 任意。`action` を書かない rule の既定。省略時は DENY
+    rules:
+      - to:
+          functions: [DROP, TRUNCATE]   # SQL 文のキーワード。省略すると catch-all
+        action: DENY
+        message:
+          reason: "..."
+          next: "..."
 ```
 
 ## `commandGate` の判定方法
@@ -69,6 +79,17 @@ spec:
   誤検知した場合は rule の action（多くは CONFIRM か DENY）になる。
 - `guard` を実行したディレクトリはプロセスから取り、hook payload の値は使わない。
 
+## `sqlGate`：全環境に効く SQL のルール
+
+`sqlGate` は、`psql` や `mysql` のコマンドが実行する SQL を、**どの環境に接続するかに関係なく**判定する。
+rule の形は [`.guard/db/policy.yml`](db-schema.md) から `labels` を除いたもの：`to.functions` に SQL 文のキーワード
+（`DROP`、`SELECT` など。コマンドラインから読めない SQL は `UNKNOWN`）を書き、`functions` の無い rule は catch-all で、
+文のキーワードを `functions` に含む最初の rule が catch-all より先に勝つ。SQL の読み取り方は
+[データベース関連ファイル](db-schema.md)を参照。
+
+`.guard/db/policy.yml` の環境ごとのルールが先に判定され、`sqlGate` はそこで決まらなかったものを判定する。
+コマンドが `commandGate` で制限されたパスにも触れる場合は、厳しい方の答えが採用される。
+
 ## `repositoryGate`：ブランチのラベル
 
 `repositoryGate` 自体は判定をしない。どのリポジトリのどのブランチが特別かを**ラベル**で guard に伝え、
@@ -95,7 +116,8 @@ spec:
 | エラー | `GuardManifest` が2つ以上ある |
 | エラー | `repositoryGate.repose[].name` が無い、`owner/name` の形でない、または重複している |
 | エラー | `repose[].protected` に不正なパターン、または空の要素がある |
-| 警告 | `sqlGate` に中身がある（未対応） |
+| エラー | `sqlGate`：rule が無い、未知のクライアント、`ALLOW`/`DENY`/`CONFIRM` 以外の `action`、空の function |
+| 警告 | `sqlGate` に2つ目の catch-all（`functions` なし）の rule がある：最初のものがすべてに効くため到達不可能 |
 
 ## 例
 

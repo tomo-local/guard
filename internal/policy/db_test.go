@@ -7,16 +7,23 @@ import (
 
 const connectionsYAML = `apiVersion: ai-guard/v1
 kind: GuardDBConnections
-metadata: {name: connections}
+metadata:
+  name: connections
 spec:
   environments:
     - name: production
-      hosts: ["*.prod.example.com", "10.0.0.5"]
+      labels: [prod, sensitive]
+      cli:
+        hosts: ["*.prod.example.com", "10.0.0.5"]
     - name: reporting
-      hosts: ["*.example.com"]
-      databases: ["report_*"]
+      labels: [reports]
+      cli:
+        hosts: ["*.example.com"]
+        databases: ["report_*"]
     - name: local
-      hosts: [localhost, 127.0.0.1]
+      labels: [dev]
+      cli:
+        hosts: [localhost, 127.0.0.1]
 `
 
 func loadConnections(t *testing.T, body string) *GuardDBConnections {
@@ -28,28 +35,40 @@ func loadConnections(t *testing.T, body string) *GuardDBConnections {
 	return p.(*GuardDBConnections)
 }
 
-func TestEnvironments(t *testing.T) {
+func TestMatch(t *testing.T) {
 	c := loadConnections(t, connectionsYAML)
 	cases := []struct {
-		host, db string
-		want     []string
+		host, db   string
+		wantEnvs   string
+		wantLabels string
 	}{
-		{"db.prod.example.com", "app", []string{"production"}},
-		{"DB.PROD.EXAMPLE.COM", "app", []string{"production"}}, // case-insensitive
-		{"10.0.0.5", "", []string{"production"}},
-		{"db.example.com", "report_2026", []string{"reporting"}},
-		{"db.example.com", "app", nil},                                           // host matches but database doesn't
-		{"db.example.com", "", nil},                                              // database required by the environment
-		{"db.prod.example.com", "report_x", []string{"production", "reporting"}}, // several at once
-		{"localhost", "app", []string{"local"}},
-		{"", "app", []string{"local"}}, // no host = the default local connection
-		{"unknown.net", "app", nil},
+		{"db.prod.example.com", "app", "production", "prod,sensitive"},
+		{"DB.PROD.EXAMPLE.COM", "app", "production", "prod,sensitive"}, // case-insensitive
+		{"10.0.0.5", "", "production", "prod,sensitive"},
+		{"db.example.com", "report_2026", "reporting", "reports"},
+		{"db.example.com", "app", "", ""}, // host matches but the database doesn't
+		{"db.example.com", "", "", ""},    // the environment lists databases
+		{"db.prod.example.com", "report_x", "production,reporting", "prod,sensitive,reports"},
+		{"localhost", "app", "local", "dev"},
+		{"", "app", "local", "dev"}, // no host = the default local connection
+		{"unknown.net", "app", "", ""},
 	}
 	for _, tc := range cases {
-		got := c.Environments(tc.host, tc.db)
-		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
-			t.Errorf("Environments(%q, %q) = %v, want %v", tc.host, tc.db, got, tc.want)
+		got := c.Match(tc.host, tc.db)
+		if strings.Join(got.Environments, ",") != tc.wantEnvs || strings.Join(got.Labels, ",") != tc.wantLabels {
+			t.Errorf("Match(%q, %q) = %+v, want envs %q labels %q", tc.host, tc.db, got, tc.wantEnvs, tc.wantLabels)
 		}
+	}
+	if got := strings.Join(c.LabelNames(), ","); got != "prod,sensitive,reports,dev" {
+		t.Errorf("LabelNames = %q", got)
+	}
+}
+
+func TestDBConnections_UnknownKeyIsAnError(t *testing.T) {
+	// A way of connecting that isn't supported yet must not be ignored silently.
+	body := connectionsYAML + "      tableplus:\n        connection: Prod\n"
+	if _, err := newGuardDBConnections([]byte(body), "c.yml", Deps{}); err == nil || !strings.Contains(err.Error(), "tableplus") {
+		t.Fatalf("expected an unknown field error mentioning tableplus, got %v", err)
 	}
 }
 
@@ -58,18 +77,20 @@ func TestDBConnections_Lint(t *testing.T) {
 		t.Fatalf("expected no issues, got %v", issues)
 	}
 	cases := []struct{ name, body, want string }{
-		{"duplicate name", connectionsYAML + "    - name: local\n      hosts: [x]\n", "more than once"},
-		{"no hosts nor databases", connectionsYAML + "    - name: lonely\n", "hosts and/or databases"},
+		{"duplicate name", connectionsYAML + "    - name: local\n      cli:\n        hosts: [x]\n", "more than once"},
+		{"no way of connecting", connectionsYAML + "    - name: lonely\n      labels: [x]\n", "at least one way of connecting"},
+		{"cli without hosts nor databases", connectionsYAML + "    - name: lonely\n      cli: {}\n", "hosts and/or databases"},
 		{"bad host pattern", strings.Replace(connectionsYAML, `"10.0.0.5"`, `"10.0.[0"`, 1), "not a valid pattern"},
 		{"bad database pattern", strings.Replace(connectionsYAML, `"report_*"`, `"report_["`, 1), "not a valid pattern"},
-		{"empty name", connectionsYAML + "    - name: \"\"\n      hosts: [x]\n", "name"},
+		{"duplicate label", strings.Replace(connectionsYAML, "[prod, sensitive]", "[prod, prod]", 1), "listed more than once"},
+		{"empty label", strings.Replace(connectionsYAML, "[prod, sensitive]", `[prod, ""]`, 1), "labels"},
+		{"empty name", connectionsYAML + "    - name: \"\"\n      cli:\n        hosts: [x]\n", "name"},
 		{"wrong kind", strings.Replace(connectionsYAML, "kind: GuardDBConnections", "kind: Nope", 1), "kind"},
-		{"no environments", "apiVersion: ai-guard/v1\nkind: GuardDBConnections\nmetadata: {name: c}\nspec: {environments: []}\n", "environments"},
+		{"no environments", "apiVersion: ai-guard/v1\nkind: GuardDBConnections\nmetadata:\n  name: c\nspec:\n  environments: []\n", "environments"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			issues := loadConnections(t, tc.body).Lint()
-			if !hasErrorContaining(issues, tc.want) {
+			if issues := loadConnections(t, tc.body).Lint(); !hasErrorContaining(issues, tc.want) {
 				t.Fatalf("expected an error mentioning %q, got %v", tc.want, issues)
 			}
 		})
@@ -78,18 +99,31 @@ func TestDBConnections_Lint(t *testing.T) {
 
 const dbPolicyYAML = `apiVersion: ai-guard/v1
 kind: GuardDBPolicy
-metadata: {name: db-policy}
+metadata:
+  name: db-policy
 spec:
   target:
-    action: CONFIRM
+    action: DENY
   rules:
     - to:
-        label: prod
-        environment: {anyOf: [production]}
+        label: prod-ddl
+        labels: [prod]
+        functions: [DROP, TRUNCATE]
       action: DENY
-      message: {reason: "{cmd} connects to production.", next: "Ask the user to run it."}
+      message:
+        reason: "{cmd} changes the schema of production."
+        next: "Ask the user to run it."
     - to:
-        environment: {noneOf: [production, local]}
+        labels: [prod]
+        functions: [SELECT]
+      action: ALLOW
+    - to:
+        labels: [prod]
+      action: CONFIRM
+    - to:
+        label: anywhere
+        functions: [DELETE]
+      action: CONFIRM
 `
 
 func loadDBPolicy(t *testing.T, body string, db DBEnvironments) *GuardDBPolicy {
@@ -107,60 +141,95 @@ func TestGuardDBPolicy_Evaluate(t *testing.T) {
 		t.Fatalf("unexpected %+v / %d", p.Meta(), p.Priority())
 	}
 
-	v, ok := p.Evaluate(cmdOf("psql", "-h", "db.prod.example.com", "app"))
-	if !ok || v.Action != ActionDeny || v.Label != "prod" || v.Reason != "psql -h db.prod.example.com app connects to production." || v.Source != "db/policy.yml" {
-		t.Fatalf("unexpected verdict %+v (ok=%v)", v, ok)
+	prod := func(sql string) []string { return []string{"-h", "db.prod.example.com", "-c", sql} }
+	cases := []struct {
+		name string
+		cmd  []string
+		tool string
+		want Action
+		ok   bool
+	}{
+		{"production DROP is denied", prod("drop table x"), "psql", ActionDeny, true},
+		{"production SELECT is allowed", prod("select 1"), "psql", ActionAllow, true},
+		{"production other statements hit the catch-all", prod("update t set a = 1"), "psql", ActionConfirm, true},
+		{"strictest statement wins", prod("select 1; drop table x"), "psql", ActionDeny, true},
+		{"a read-only script is allowed", prod("select 1; select 2"), "psql", ActionAllow, true},
+		{"unreadable SQL (script file) falls to the catch-all", []string{"-h", "db.prod.example.com", "-f", "x.sql"}, "psql", ActionConfirm, true},
+		{"a rule without labels applies to every connection", []string{"-h", "localhost", "-c", "delete from t"}, "psql", ActionConfirm, true},
+		{"no rule for this statement on this connection", []string{"-h", "localhost", "-c", "select 1"}, "psql", "", false},
+		{"mysql -e", []string{"-h", "db.prod.example.com", "-e", "drop table x"}, "mysql", ActionDeny, true},
+		{"not a DB client", []string{"-h", "db.prod.example.com"}, "cat", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v, ok := p.Evaluate(cmdOf(tc.tool, tc.cmd...))
+			if ok != tc.ok || (ok && v.Action != tc.want) {
+				t.Fatalf("got %+v (ok=%v), want %s (ok=%v)", v, ok, tc.want, tc.ok)
+			}
+		})
 	}
 
-	// Host in no environment: the noneOf rule applies, with the default
-	// action and a generic message.
-	v, ok = p.Evaluate(cmdOf("mysql", "-h", "staging.other.net", "app"))
-	if !ok || v.Action != ActionConfirm || !strings.Contains(v.Reason, "staging.other.net") || v.Next == "" {
-		t.Fatalf("unexpected verdict %+v (ok=%v)", v, ok)
-	}
-
-	// Local connections match neither rule.
-	if _, ok := p.Evaluate(cmdOf("psql", "app")); ok {
-		t.Fatal("expected no opinion for a local connection")
-	}
-	// Not a DB client.
-	if _, ok := p.Evaluate(cmdOf("cat", "-h", "db.prod.example.com")); ok {
-		t.Fatal("expected no opinion for other tools")
+	v, _ := p.Evaluate(cmdOf("psql", prod("drop table x")...))
+	if v.Label != "prod-ddl" || v.Reason != "psql -h db.prod.example.com -c drop table x changes the schema of production." || v.Source != "db/policy.yml" {
+		t.Fatalf("unexpected verdict %+v", v)
 	}
 }
 
-func TestGuardDBPolicy_StrictestRuleAndDefaults(t *testing.T) {
-	both := `apiVersion: ai-guard/v1
+func TestGuardDBPolicy_FunctionRuleBeatsEarlierCatchAll(t *testing.T) {
+	// Like a CommandGatePolicy: a rule that lists the statement wins over a
+	// catch-all, wherever the catch-all sits in the file.
+	body := `apiVersion: ai-guard/v1
 kind: GuardDBPolicy
-metadata: {name: p}
+metadata:
+  name: p
 spec:
   rules:
-    - to: {environment: {anyOf: [reporting]}}
+    - to:
+        label: all
       action: CONFIRM
-    - to: {environment: {anyOf: [production]}}
+    - to:
+        functions: [SELECT]
+      action: ALLOW
 `
-	p := loadDBPolicy(t, both, loadConnections(t, connectionsYAML))
-	// production + reporting at once: the rule without action defaults to DENY, which is stricter.
-	if v, ok := p.Evaluate(cmdOf("psql", "-h", "db.prod.example.com", "report_x")); !ok || v.Action != ActionDeny {
-		t.Fatalf("expected DENY, got %+v (ok=%v)", v, ok)
+	p := loadDBPolicy(t, body, nil)
+	if v, ok := p.Evaluate(cmdOf("psql", "-c", "select 1")); !ok || v.Action != ActionAllow {
+		t.Fatalf("expected ALLOW, got %+v (ok=%v)", v, ok)
+	}
+	if v, ok := p.Evaluate(cmdOf("psql", "-c", "delete from t")); !ok || v.Action != ActionConfirm {
+		t.Fatalf("expected CONFIRM, got %+v (ok=%v)", v, ok)
 	}
 }
 
-func TestGuardDBPolicy_Clients(t *testing.T) {
-	onlyMySQL := strings.Replace(dbPolicyYAML, "  target:\n    action: CONFIRM", "  target:\n    clients: [mysql]\n    action: CONFIRM", 1)
-	p := loadDBPolicy(t, onlyMySQL, loadConnections(t, connectionsYAML))
-	if _, ok := p.Evaluate(cmdOf("psql", "-h", "db.prod.example.com")); ok {
+func TestGuardDBPolicy_DefaultActionAndClients(t *testing.T) {
+	body := `apiVersion: ai-guard/v1
+kind: GuardDBPolicy
+metadata:
+  name: p
+spec:
+  target:
+    clients: [mysql]
+    action: CONFIRM
+  rules:
+    - to:
+        functions: [DROP]
+`
+	p := loadDBPolicy(t, body, nil)
+	if v, ok := p.Evaluate(cmdOf("mysql", "-e", "drop table x")); !ok || v.Action != ActionConfirm {
+		t.Fatalf("expected the default CONFIRM, got %+v (ok=%v)", v, ok)
+	}
+	if _, ok := p.Evaluate(cmdOf("psql", "-c", "drop table x")); ok {
 		t.Fatal("psql is not covered when clients: [mysql]")
 	}
-	if _, ok := p.Evaluate(cmdOf("mysql", "-h", "db.prod.example.com")); !ok {
-		t.Fatal("mysql should be covered")
-	}
 }
 
-func TestGuardDBPolicy_NoConnectionsNeverMatches(t *testing.T) {
+func TestGuardDBPolicy_LabelRulesNeedConnections(t *testing.T) {
 	p := loadDBPolicy(t, dbPolicyYAML, nil)
-	if _, ok := p.Evaluate(cmdOf("psql", "-h", "db.prod.example.com")); ok {
-		t.Fatal("without defined environments no rule can match")
+	// No connections: the labelled rules can't match, the unlabelled one still does.
+	if _, ok := p.Evaluate(cmdOf("psql", "-h", "db.prod.example.com", "-c", "drop table x")); ok {
+		t.Fatal("a rule naming labels can't match without connections.yml")
+	}
+	if v, ok := p.Evaluate(cmdOf("psql", "-c", "delete from t")); !ok || v.Action != ActionConfirm {
+		t.Fatalf("expected the unlabelled rule to apply, got %+v (ok=%v)", v, ok)
 	}
 }
 
@@ -169,12 +238,11 @@ func TestGuardDBPolicy_Lint(t *testing.T) {
 		t.Fatalf("expected no issues, got %v", issues)
 	}
 	cases := []struct{ name, body, want string }{
-		{"unknown client", strings.Replace(dbPolicyYAML, "  target:\n    action: CONFIRM", "  target:\n    clients: [sqlite3]\n    action: CONFIRM", 1), "unknown client"},
-		{"bad action", strings.Replace(dbPolicyYAML, "action: DENY", "action: MAYBE", 1), "action"},
-		{"empty environment", strings.Replace(dbPolicyYAML, "environment: {anyOf: [production]}", "environment: {}", 1), "environment.anyOf"},
-		{"same name both", strings.Replace(dbPolicyYAML, "{anyOf: [production]}", "{anyOf: [production], noneOf: [production]}", 1), "can never match"},
-		{"missing environment", strings.Replace(dbPolicyYAML, "        environment: {anyOf: [production]}\n", "", 1), "environment"},
-		{"no rules", "apiVersion: ai-guard/v1\nkind: GuardDBPolicy\nmetadata: {name: p}\nspec: {rules: []}\n", "rules"},
+		{"unknown client", strings.Replace(dbPolicyYAML, "  target:\n    action: DENY", "  target:\n    clients: [sqlite3]\n    action: DENY", 1), "unknown client"},
+		{"bad action", strings.Replace(dbPolicyYAML, "action: DENY\n      message", "action: MAYBE\n      message", 1), "action"},
+		{"empty function", strings.Replace(dbPolicyYAML, "[DROP, TRUNCATE]", `[DROP, ""]`, 1), "functions"},
+		{"empty label", strings.Replace(dbPolicyYAML, "labels: [prod]\n        functions: [DROP", `labels: [""]`+"\n        functions: [DROP", 1), "labels"},
+		{"no rules", "apiVersion: ai-guard/v1\nkind: GuardDBPolicy\nmetadata:\n  name: p\nspec:\n  rules: []\n", "rules"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -182,6 +250,11 @@ func TestGuardDBPolicy_Lint(t *testing.T) {
 				t.Fatalf("expected an error mentioning %q, got %v", tc.want, issues)
 			}
 		})
+	}
+
+	twoCatchAlls := strings.Replace(dbPolicyYAML, "    - to:\n        label: anywhere\n        functions: [DELETE]", "    - to:\n        label: a\n    - to:\n        label: b", 1)
+	if issues := loadDBPolicy(t, twoCatchAlls, nil).Lint(); !hasWarningContaining(issues, "second rule for every statement") {
+		t.Fatalf("expected a second catch-all warning, got %v", issues)
 	}
 }
 
@@ -192,10 +265,9 @@ func TestDBPolicyRefs(t *testing.T) {
 		t.Fatalf("expected no issues, got %v", issues)
 	}
 
-	typo := loadDBPolicy(t, strings.Replace(dbPolicyYAML, "[production, local]", "[production, locl]", 1), conns)
-	issues := lintDBPolicyRefs([]Policy{conns, typo})
-	if !hasErrorContaining(issues, `unknown environment "locl"`) {
-		t.Fatalf("expected an unknown environment error, got %v", issues)
+	typo := loadDBPolicy(t, strings.Replace(dbPolicyYAML, "labels: [prod]\n      action: CONFIRM", "labels: [prd]\n      action: CONFIRM", 1), conns)
+	if issues := lintDBPolicyRefs([]Policy{conns, typo}); !hasErrorContaining(issues, `unknown label "prd"`) {
+		t.Fatalf("expected an unknown label error, got %v", issues)
 	}
 
 	if issues := lintDBPolicyRefs([]Policy{good}); !hasErrorContaining(issues, "no GuardDBConnections") {

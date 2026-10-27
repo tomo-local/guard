@@ -35,6 +35,21 @@ spec:
         protected: [main, staging, "docs/*"]
 `
 
+const manifestWithSQLGate = manifestYAML + `  sqlGate:
+    target:
+      action: DENY
+    rules:
+      - to:
+          functions: [DROP, TRUNCATE]
+        action: DENY
+      - to:
+          functions: [UNKNOWN]
+        action: CONFIRM
+      - to:
+          label: other
+        action: ALLOW
+`
+
 func loadManifest(t *testing.T, body string) *GuardManifest {
 	t.Helper()
 	p, err := newGuardManifest([]byte(body), ".guard/manifest.yaml", Deps{Root: "/proj", Cwd: "/proj"})
@@ -123,9 +138,8 @@ func TestManifest_Lint(t *testing.T) {
 		t.Fatalf("expected no issues, got %v", issues)
 	}
 
-	withSQL := manifestYAML + "  sqlGate:\n    target: {action: DENY}\n"
-	if issues := loadManifest(t, withSQL).Lint(); HasErrors(issues) || !hasWarningContaining(issues, "sqlGate") {
-		t.Fatalf("expected only the sqlGate warning, got %v", issues)
+	if issues := loadManifest(t, manifestWithSQLGate).Lint(); len(issues) != 0 {
+		t.Fatalf("expected no issues, got %v", issues)
 	}
 
 	cases := []struct {
@@ -149,6 +163,10 @@ spec:
 		{"duplicate repo", strings.Replace(manifestYAML, "        protected:", "        protected:", 1) + "      - name: owner/repo\n", "more than once"},
 		{"bad branch pattern", strings.Replace(manifestYAML, `"docs/*"`, `"docs/["`, 1), "not a valid branch pattern"},
 		{"empty protected entry", strings.Replace(manifestYAML, `"docs/*"`, `""`, 1), "protected"},
+		{"sqlGate unknown client", strings.Replace(manifestWithSQLGate, "    target:\n      action: DENY\n    rules:\n      - to:\n          functions: [DROP", "    target:\n      clients: [sqlite3]\n    rules:\n      - to:\n          functions: [DROP", 1), "unknown client"},
+		{"sqlGate bad action", strings.Replace(manifestWithSQLGate, "action: ALLOW", "action: MAYBE", 1), "action"},
+		{"sqlGate empty function", strings.Replace(manifestWithSQLGate, "[DROP, TRUNCATE]", `[DROP, ""]`, 1), "functions"},
+		{"sqlGate no rules", manifestYAML + "  sqlGate:\n    rules: []\n", "rules"},
 		{"no rules", `apiVersion: ai-guard/v1
 kind: GuardManifest
 metadata: {name: m}
@@ -207,5 +225,58 @@ func TestManifest_BranchLabels(t *testing.T) {
 
 	if got := loadManifest(t, "apiVersion: ai-guard/v1\nkind: GuardManifest\nmetadata: {name: m}\nspec: {}\n").BranchLabels("owner/repo", "main"); got != nil {
 		t.Fatalf("a manifest without repositoryGate labels nothing, got %v", got)
+	}
+}
+
+func TestManifest_SQLGate(t *testing.T) {
+	m := loadManifest(t, manifestWithSQLGate)
+
+	cases := []struct {
+		name string
+		cmd  []string
+		tool string
+		want Action
+		ok   bool
+	}{
+		{"DROP is denied whatever the connection", []string{"-h", "anything", "-c", "drop table x"}, "psql", ActionDeny, true},
+		{"TRUNCATE on mysql", []string{"-e", "truncate t"}, "mysql", ActionDeny, true},
+		{"unreadable SQL asks", []string{"-f", "x.sql"}, "psql", ActionConfirm, true},
+		{"anything else hits the catch-all", []string{"-c", "select 1"}, "psql", ActionAllow, true},
+		{"other tools are not SQL clients", []string{"-c", "drop table x"}, "cat", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v, ok := m.Evaluate(cmdOf(tc.tool, tc.cmd...))
+			if ok != tc.ok || (ok && v.Action != tc.want) {
+				t.Fatalf("got %+v (ok=%v), want %s (ok=%v)", v, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestManifest_SQLGateClientsAndCommandGateTogether(t *testing.T) {
+	narrowed := loadManifest(t, manifestYAML+`  sqlGate:
+    target:
+      clients: [mysql]
+    rules:
+      - to:
+          functions: [DROP]
+`)
+	if _, ok := narrowed.Evaluate(cmdOf("psql", "-c", "drop table x")); ok {
+		t.Fatal("psql isn't covered when clients: [mysql]")
+	}
+	if v, ok := narrowed.Evaluate(cmdOf("mysql", "-e", "drop table x")); !ok || v.Action != ActionDeny {
+		t.Fatalf("expected the default DENY for mysql, got %+v (ok=%v)", v, ok)
+	}
+
+	// A command that both touches a /src path (commandGate: CONFIRM) and runs
+	// a DROP (sqlGate: DENY): the stricter answer stands.
+	both := loadManifest(t, manifestWithSQLGate)
+	if v, ok := both.Evaluate(cmdOf("psql", "-f", "src/x.sql", "-c", "drop table x")); !ok || v.Action != ActionDeny {
+		t.Fatalf("expected DENY, got %+v (ok=%v)", v, ok)
+	}
+	// Only the path rule has an opinion about a non-SQL tool.
+	if v, ok := both.Evaluate(cmdOf("touch", "src/a.go")); !ok || v.Action != ActionConfirm {
+		t.Fatalf("expected the commandGate CONFIRM, got %+v (ok=%v)", v, ok)
 	}
 }

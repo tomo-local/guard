@@ -22,19 +22,25 @@ func write(t *testing.T, path, body string) {
 
 const testConnections = `apiVersion: ai-guard/v1
 kind: GuardDBConnections
-metadata: {name: c}
+metadata:
+  name: c
 spec:
   environments:
     - name: production
-      hosts: ["*.prod.example.com"]
+      labels: [prod]
+      cli:
+        hosts: ["*.prod.example.com"]
 `
 
 const testDBPolicy = `apiVersion: ai-guard/v1
 kind: GuardDBPolicy
-metadata: {name: p}
+metadata:
+  name: p
 spec:
   rules:
-    - to: {environment: {anyOf: [production]}}
+    - to:
+        labels: [prod]
+        functions: [DROP]
       action: DENY
 `
 
@@ -54,7 +60,7 @@ func TestLoadPolicies_DBFiles(t *testing.T) {
 		t.Fatalf("expected the connections and the DB policy, got %d", len(policies))
 	}
 
-	got := engine.NewEvaluator(policies).EvaluateCommand(shellcmd.SimpleCommand{Tool: "psql", Args: []string{"-h", "db.prod.example.com"}})
+	got := engine.NewEvaluator(policies).EvaluateCommand(shellcmd.SimpleCommand{Tool: "psql", Args: []string{"-h", "db.prod.example.com", "-c", "drop table x"}})
 	if got.Action != policy.ActionDeny {
 		t.Fatalf("the DB policy should see the connections loaded beside it, got %+v", got)
 	}

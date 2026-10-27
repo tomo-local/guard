@@ -3,30 +3,35 @@ kind: GuardDBPolicy
 metadata:
   name: db-policy
 spec:
+  # SQL rules by the labels of the environment (see connections.yml). Like the
+  # per-tool policies: a rule that lists the statement's keyword wins over a
+  # catch-all rule (no functions) for the same labels.
   target:
     clients: [psql, mysql]
-    action: CONFIRM          # used by rules that don't set their own action
+    action: DENY             # used by rules that don't set their own action
   rules:
     - to:
-        label: production
-        environment:
-          anyOf: [production]
+        label: prod-schema
+        labels: [prod]
+        functions: [DROP, TRUNCATE, ALTER]
       action: DENY
       message:
-        reason: "{cmd} connects to a production database."
+        reason: "{cmd} changes the schema of a production database."
         next: "Ask the user to run it themselves."
     - to:
-        label: staging
-        environment:
-          anyOf: [staging]
-      message:
-        reason: "{cmd} connects to a staging database."
-        next: "Confirm with the user before proceeding."
-    # Connections that belong to no environment above (and aren't local).
+        label: prod-read
+        labels: [prod]
+        functions: [SELECT, SHOW, EXPLAIN]
+      action: ALLOW
     - to:
-        label: unknown-host
-        environment:
-          noneOf: [production, staging, local]
+        label: prod-other
+        labels: [prod]
+      action: CONFIRM
       message:
-        reason: "{cmd} connects to a database that is not in .guard/db/connections.yml."
-        next: "Add the host to connections.yml, or confirm with the user."
+        reason: "{cmd} runs SQL against a production database."
+        next: "Confirm with the user before proceeding."
+    - to:
+        label: stage-write
+        labels: [stage]
+        functions: [DROP, TRUNCATE, DELETE, UPDATE]
+      action: CONFIRM

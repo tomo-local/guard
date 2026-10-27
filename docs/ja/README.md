@@ -383,24 +383,35 @@ spec:
 
 ### データベースクライアント（`.guard/db/`）
 
-`psql` と `mysql` は `.guard/db/` の2つのファイルで制御する。`connections.yml` がホストとデータベースから
-環境（production、staging など）を定義し、`policy.yml` が、開く接続の環境に応じてコマンドをどうするかを決める。
-[データベース関連ファイル](db-schema.md)を参照。
+`psql` と `mysql` は、ツールごとのポリシーと同じ書き方の SQL ルールで制御する（`functions` に `DROP`、`SELECT` などの
+文のキーワードを書く）。`.guard/db/connections.yml` が環境を定義してラベルを付け、`.guard/db/policy.yml` がラベルごとの
+ルールを書き、manifest の `sqlGate` が環境に関係なく効くルールを持つ。[データベース関連ファイル](db-schema.md)を参照。
 
 ```yaml
 # .guard/db/connections.yml
 spec:
   environments:
     - name: production
-      hosts: ["*.prod.example.com"]
+      labels: [prod]
+      cli:
+        hosts: ["*.prod.example.com"]
 ```
 
 ```yaml
 # .guard/db/policy.yml
 spec:
   rules:
-    - to: { environment: { anyOf: [production] } }
+    - to:
+        labels: [prod]
+        functions: [DROP, TRUNCATE]
       action: DENY
+    - to:
+        labels: [prod]
+        functions: [SELECT]
+      action: ALLOW
+    - to:
+        labels: [prod]
+      action: CONFIRM
 ```
 
 ### カスタムチェック（`options.customCheck`）
@@ -444,9 +455,10 @@ spec:
   [GuardManifest](manifest-schema.md#既知の制限)を参照。
 - ブランチ条件（`to.branch`）は、`guard` を実行したディレクトリで `git remote get-url origin` を実行して
   リポジトリを、コマンド（`git push` の refspec、`git branch -d <name>`）または現在のブランチからブランチを決める。
-  `git push --all/--mirror` と `git -C <path>` は追跡しない。manifest の `sqlGate` は読み込むが未対応。
-- データベース接続（`.guard/db/`）はコマンドラインだけから読む（`psql`/`mysql` のフラグ、URI、位置引数のデータベース名）。
-  環境変数、`~/.pgpass`、`-f` のファイル、標準入力は読まない。
+  `git push --all/--mirror` と `git -C <path>` は追跡しない。
+- データベースの接続先と SQL（`.guard/db/`、`sqlGate`）はコマンドラインだけから読む（`psql`/`mysql` のフラグ、URI、
+  位置引数のデータベース名、`-c`/`-e` のテキスト）。環境変数、`~/.pgpass`、`-f` のファイル、標準入力は読まない
+  （その SQL は `UNKNOWN` になる）。文の最初の語だけを見る。
 - 対象スコープは **Bash コマンドのみ**。
 - サブコマンド（`functions`）の判定は「先頭の `-` で始まらない最初の引数」というヒューリスティック。
   `git -C <path> push` のように値を取るフラグの直後の引数を誤って function とみなす場合がある。

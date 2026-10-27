@@ -12,23 +12,36 @@ import (
 
 const dbConnectionsYAML = `apiVersion: ai-guard/v1
 kind: GuardDBConnections
-metadata: {name: connections}
+metadata:
+  name: connections
 spec:
   environments:
     - name: production
-      hosts: ["*.prod.example.com"]
+      labels: [prod]
+      cli:
+        hosts: ["*.prod.example.com"]
     - name: local
-      hosts: [localhost]
+      labels: [dev]
+      cli:
+        hosts: [localhost]
 `
 
 const dbPolicyYAML = `apiVersion: ai-guard/v1
 kind: GuardDBPolicy
-metadata: {name: db-policy}
+metadata:
+  name: db-policy
 spec:
   rules:
-    - to: {environment: {anyOf: [production]}}
+    - to:
+        labels: [prod]
+        functions: [DROP, TRUNCATE]
       action: DENY
-    - to: {environment: {noneOf: [production, local]}}
+    - to:
+        labels: [prod]
+        functions: [SELECT]
+      action: ALLOW
+    - to:
+        labels: [prod]
       action: CONFIRM
 `
 
@@ -53,7 +66,7 @@ func loadDB(t *testing.T, connections, pol string) []policy.Policy {
 	return []policy.Policy{p, c}
 }
 
-func TestEvaluateCommand_DBEnvironments(t *testing.T) {
+func TestEvaluateCommand_DBLabelsAndStatements(t *testing.T) {
 	e := NewEvaluator(loadDB(t, dbConnectionsYAML, dbPolicyYAML))
 
 	cases := []struct {
@@ -62,9 +75,10 @@ func TestEvaluateCommand_DBEnvironments(t *testing.T) {
 		want  policy.Action
 		deflt bool
 	}{
-		{"production is denied", shellcmd.SimpleCommand{Tool: "psql", Args: []string{"-h", "db.prod.example.com", "app"}}, policy.ActionDeny, false},
-		{"unknown host asks", shellcmd.SimpleCommand{Tool: "mysql", Args: []string{"-h", "staging.other.net"}}, policy.ActionConfirm, false},
-		{"local falls to the default", shellcmd.SimpleCommand{Tool: "psql", Args: []string{"app"}}, policy.DefaultAction, true},
+		{"production DROP is denied", shellcmd.SimpleCommand{Tool: "psql", Args: []string{"-h", "db.prod.example.com", "-c", "drop table x"}}, policy.ActionDeny, false},
+		{"production SELECT is allowed", shellcmd.SimpleCommand{Tool: "mysql", Args: []string{"-h", "db.prod.example.com", "-e", "select 1"}}, policy.ActionAllow, false},
+		{"production script file asks", shellcmd.SimpleCommand{Tool: "psql", Args: []string{"-h", "db.prod.example.com", "-f", "x.sql"}}, policy.ActionConfirm, false},
+		{"local has no rule", shellcmd.SimpleCommand{Tool: "psql", Args: []string{"-c", "drop table x"}}, policy.DefaultAction, true},
 		{"other tools are untouched", shellcmd.SimpleCommand{Tool: "cat", Args: []string{"x"}}, policy.DefaultAction, true},
 	}
 	for _, tc := range cases {
@@ -83,7 +97,7 @@ func TestEvaluateCommand_ToolPolicyBeatsDBPolicy(t *testing.T) {
 	}, policy.Deps{})
 	e := NewEvaluator(append(loadDB(t, dbConnectionsYAML, dbPolicyYAML), psqlAllow))
 
-	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "psql", Args: []string{"-h", "db.prod.example.com"}})
+	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "psql", Args: []string{"-h", "db.prod.example.com", "-c", "drop table x"}})
 	if got.Action != policy.ActionAllow {
 		t.Fatalf("a per-tool policy is more specific and should decide, got %+v", got)
 	}
@@ -95,14 +109,69 @@ func TestLint_DBReferencesAcrossFiles(t *testing.T) {
 		t.Fatalf("expected no issues, got %v", issues)
 	}
 
-	typo := loadDB(t, dbConnectionsYAML, strings.Replace(dbPolicyYAML, "[production, local]", "[production, locl]", 1))
+	typo := loadDB(t, dbConnectionsYAML, strings.Replace(dbPolicyYAML, "labels: [prod]\n      action: CONFIRM", "labels: [prd]\n      action: CONFIRM", 1))
 	var found bool
 	for _, i := range Lint(typo) {
-		if strings.Contains(i.Message, `unknown environment "locl"`) {
+		if strings.Contains(i.Message, `unknown label "prd"`) {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected Lint to catch the unknown environment through the cross-kind hook, got %v", Lint(typo))
+		t.Fatalf("expected Lint to catch the unknown label through the cross-kind hook, got %v", Lint(typo))
+	}
+}
+
+// With the manifest's sqlGate (no environment involved) as the fallback behind
+// the DB policy.
+func TestEvaluateCommand_SQLGateIsTheFallbackBehindTheDBPolicy(t *testing.T) {
+	dir := t.TempDir()
+	mp := filepath.Join(dir, "manifest.yaml")
+	body := `apiVersion: ai-guard/v1
+kind: GuardManifest
+metadata:
+  name: m
+spec:
+  sqlGate:
+    rules:
+      - to:
+          functions: [DROP, TRUNCATE]
+        action: DENY
+`
+	if err := os.WriteFile(mp, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := policy.LoadFile(mp, policy.Deps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := NewEvaluator(append(loadDB(t, dbConnectionsYAML, dbPolicyYAML), m))
+
+	// The DB policy has a rule for production: it decides (SELECT -> ALLOW).
+	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "psql", Args: []string{"-h", "db.prod.example.com", "-c", "select 1"}})
+	if got.Action != policy.ActionAllow {
+		t.Fatalf("expected the DB policy to decide, got %+v", got)
+	}
+	// Local: no DB policy rule, so the manifest's environment-independent rule decides.
+	got = e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "psql", Args: []string{"-c", "drop table x"}})
+	if got.Action != policy.ActionDeny || got.Default {
+		t.Fatalf("expected the sqlGate to decide, got %+v", got)
+	}
+}
+
+// Through the shell parser, which keeps the quotes of the command line.
+func TestEvaluateAll_DBFromACommandLine(t *testing.T) {
+	e := NewEvaluator(loadDB(t, dbConnectionsYAML, dbPolicyYAML))
+
+	cases := map[string]policy.Action{
+		`psql -h db.prod.example.com -c 'drop table x'`:            policy.ActionDeny,
+		`psql -h "db.prod.example.com" -c "select 1"`:              policy.ActionAllow,
+		`psql -h db.prod.example.com -c 'select 1; drop table x'`:  policy.ActionDeny,
+		`mysql --host=db.prod.example.com -e 'update t set a = 1'`: policy.ActionConfirm,
+		`cd /tmp && psql -h db.prod.example.com -c 'drop table x'`: policy.ActionDeny,
+	}
+	for raw, want := range cases {
+		if got, _ := e.EvaluateAll(raw); got.Action != want {
+			t.Errorf("%s: got %s, want %s", raw, got.Action, want)
+		}
 	}
 }

@@ -37,7 +37,7 @@ type GuardManifest struct {
 type ManifestSpec struct {
 	CommandGate    *CommandGateSection    `yaml:"commandGate,omitempty"`
 	RepositoryGate *RepositoryGateSection `yaml:"repositoryGate,omitempty"`
-	SQLGate        any                    `yaml:"sqlGate,omitempty" validate:"-"`
+	SQLGate        *SQLGateSection        `yaml:"sqlGate,omitempty"`
 }
 
 // RepositoryGateSection describes the git repositories the project works
@@ -82,6 +82,27 @@ func (m *GuardManifest) BranchLabels(repo, branch string) []string {
 		return labels
 	}
 	return nil
+}
+
+// SQLGateSection holds SQL rules that apply whatever the environment: the
+// same `functions` (statement keywords) rules as db/policy.yml, without
+// labels. psql and mysql are covered unless target.clients narrows it.
+type SQLGateSection struct {
+	Target DBTarget  `yaml:"target"`
+	Rules  []SQLRule `yaml:"rules" validate:"min=1,dive"`
+}
+
+type SQLRule struct {
+	To      SQLTo    `yaml:"to"`
+	Action  Action   `yaml:"action,omitempty" validate:"omitempty,oneof=ALLOW DENY CONFIRM"`
+	Message *Message `yaml:"message,omitempty"`
+}
+
+type SQLTo struct {
+	// Label is descriptive only.
+	Label string `yaml:"label,omitempty"`
+	// Functions lists SQL statement keywords; none makes a catch-all.
+	Functions []string `yaml:"functions,omitempty" validate:"omitempty,dive,required"`
 }
 
 // CommandGateSection holds path-based command rules.
@@ -134,10 +155,52 @@ func (m *GuardManifest) Meta() Meta {
 
 func (m *GuardManifest) Priority() int { return manifestPriority }
 
-// Evaluate answers for commands whose path arguments match a commandGate
-// rule. When several rules match, the strictest action wins (the first one
-// on a tie).
+// Evaluate answers for commands the manifest has a rule for: commandGate
+// rules by the paths the command touches, sqlGate rules by the SQL a psql or
+// mysql command runs. When both have an answer, the stricter one stands (the
+// commandGate's on a tie).
 func (m *GuardManifest) Evaluate(cmd shellcmd.SimpleCommand) (Verdict, bool) {
+	paths, okPaths := m.evaluateCommandGate(cmd)
+	sql, okSQL := m.evaluateSQLGate(cmd)
+	switch {
+	case okPaths && okSQL:
+		if ActionRank(sql.Action) > ActionRank(paths.Action) {
+			return sql, true
+		}
+		return paths, true
+	case okSQL:
+		return sql, true
+	default:
+		return paths, okPaths
+	}
+}
+
+// evaluateSQLGate judges the SQL of a psql/mysql command with the sqlGate
+// rules, whatever environment it connects to.
+func (m *GuardManifest) evaluateSQLGate(cmd shellcmd.SimpleCommand) (Verdict, bool) {
+	sg := m.Spec.SQLGate
+	if sg == nil {
+		return Verdict{}, false
+	}
+	clients := sg.Target.Clients
+	if len(clients) == 0 {
+		clients = DBClients
+	}
+	if !contains(clients, cmd.Tool) {
+		return Verdict{}, false
+	}
+
+	rules := make([]sqlRule, len(sg.Rules))
+	for i, r := range sg.Rules {
+		rules[i] = sqlRule{Label: r.To.Label, Functions: r.To.Functions, Action: r.Action, Message: r.Message}
+	}
+	return evaluateSQL(cmd, rules, sg.Target.Action, nil, m.SourcePath, "")
+}
+
+// evaluateCommandGate answers for commands whose path arguments match a
+// commandGate rule. When several rules match, the strictest action wins (the
+// first one on a tie).
+func (m *GuardManifest) evaluateCommandGate(cmd shellcmd.SimpleCommand) (Verdict, bool) {
 	cg := m.Spec.CommandGate
 	if cg == nil {
 		return Verdict{}, false

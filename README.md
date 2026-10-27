@@ -419,25 +419,38 @@ spec:
 
 ### Database clients (`.guard/db/`)
 
-`psql` and `mysql` are governed by two files in `.guard/db/`:
-`connections.yml` defines environments (production, staging, ...) by host
-and database, and `policy.yml` decides what to do with a command by the
-environment of the connection it opens. See [Database files](docs/db-schema.md).
+`psql` and `mysql` are governed by SQL rules written like the per-tool
+policies (`functions` lists statement keywords such as `DROP`, `SELECT`).
+`.guard/db/connections.yml` defines environments and gives them labels,
+`.guard/db/policy.yml` writes the rules per label, and the manifest's
+`sqlGate` holds the rules that apply whatever the environment. See
+[Database files](docs/db-schema.md).
 
 ```yaml
 # .guard/db/connections.yml
 spec:
   environments:
     - name: production
-      hosts: ["*.prod.example.com"]
+      labels: [prod]
+      cli:
+        hosts: ["*.prod.example.com"]
 ```
 
 ```yaml
 # .guard/db/policy.yml
 spec:
   rules:
-    - to: { environment: { anyOf: [production] } }
+    - to:
+        labels: [prod]
+        functions: [DROP, TRUNCATE]
       action: DENY
+    - to:
+        labels: [prod]
+        functions: [SELECT]
+      action: ALLOW
+    - to:
+        labels: [prod]
+      action: CONFIRM
 ```
 
 ### Custom checks (`options.customCheck`)
@@ -486,10 +499,12 @@ is used as-is.
   get-url origin` in the directory `guard` runs in, and the branch from
   the command (a `git push` refspec, `git branch -d <name>`) or else the
   current branch. `git push --all/--mirror` and `git -C <path>` are not
-  tracked. `sqlGate` in the manifest is read but not enforced yet.
-- Database connections (`.guard/db/`) are read from the command line only
-  (`psql`/`mysql` flags, URIs, the positional database name), not from
-  environment variables, `~/.pgpass`, `-f` files or standard input.
+  tracked.
+- Database connections and SQL (`.guard/db/`, `sqlGate`) are read from the
+  command line only (`psql`/`mysql` flags, URIs, the positional database
+  name, `-c`/`-e` text), not from environment variables, `~/.pgpass`, `-f`
+  files or standard input (those SQL statements are `UNKNOWN`). Only the
+  first word of a statement is looked at.
 - Scope is **Bash commands only**.
 - Subcommand (`functions`) detection is a heuristic: "the first argument
   that doesn't start with `-`". `git -C <path> push` mistakes `<path>`

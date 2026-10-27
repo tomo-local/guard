@@ -43,8 +43,21 @@ func (m *GuardManifest) Lint() []Issue {
 			}
 		}
 	}
-	if hasContent(m.Spec.SQLGate) {
-		c.Warnf("spec.sqlGate: not enforced yet; its content is ignored")
+	if sg := m.Spec.SQLGate; sg != nil {
+		for i, cl := range sg.Target.Clients {
+			if cl != "" && !contains(DBClients, cl) {
+				c.Errorf("spec.sqlGate.target.clients[%d]: unknown client %q (supported: %s)", i, cl, strings.Join(DBClients, ", "))
+			}
+		}
+		catchAll := false
+		for i, r := range sg.Rules {
+			if len(r.To.Functions) == 0 {
+				if catchAll {
+					c.Warnf("spec.sqlGate.rules[%d] is a second catch-all (no functions) rule; the earlier one makes it unreachable", i)
+				}
+				catchAll = true
+			}
+		}
 	}
 	return c.Issues()
 }
@@ -96,18 +109,4 @@ func validRepoName(name string) bool {
 func validBranchPattern(pat string) bool {
 	_, err := path.Match(pat, "")
 	return err == nil
-}
-
-// hasContent reports whether a decoded YAML value holds anything.
-func hasContent(v any) bool {
-	switch x := v.(type) {
-	case nil:
-		return false
-	case map[string]any:
-		return len(x) > 0
-	case []any:
-		return len(x) > 0
-	default:
-		return true
-	}
 }

@@ -43,3 +43,24 @@ spec:
           - production
           - staging
           - docs/*
+  # SQL rules that apply whatever the environment (db/policy.yml, by label,
+  # decides first). Same shape as the policy rules, without labels.
+  sqlGate:
+    target:
+      clients: [psql, mysql]
+      action: DENY
+    rules:
+      - to:
+          label: destructive
+          functions: [DROP, TRUNCATE]
+        action: DENY
+        message:
+          reason: "{cmd} drops or empties a table."
+          next: "Ask the user to run it themselves."
+      - to:
+          label: unreadable
+          functions: [UNKNOWN]          # script files, standard input, interactive sessions
+        action: CONFIRM
+        message:
+          reason: "{cmd} runs SQL that guard can't read from the command line."
+          next: "Confirm with the user before proceeding."

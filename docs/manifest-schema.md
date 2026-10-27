@@ -34,7 +34,17 @@ spec:
       - name: owner/name       # required, matched against the origin URL
         main: main             # optional: gets the `main` label
         protected: [main, staging, "docs/*"]   # optional: get the `protected` label
-  sqlGate: {...}               # read, not enforced yet (lint warns)
+  sqlGate:                     # optional: SQL rules for every environment
+    target:
+      clients: [psql, mysql]   # optional, both when omitted
+      action: DENY             # optional default for rules without `action`; DENY if omitted
+    rules:
+      - to:
+          functions: [DROP, TRUNCATE]   # SQL statement keywords; none = catch-all
+        action: DENY
+        message:
+          reason: "..."
+          next: "..."
 ```
 
 ## How `commandGate` decides
@@ -81,6 +91,20 @@ ancestors.
 - The directory `guard` runs in comes from the process, not the hook
   payload.
 
+## `sqlGate`: SQL rules for every environment
+
+`sqlGate` judges the SQL a `psql` or `mysql` command runs, **whatever
+environment it connects to**. The rules look like those of
+[`.guard/db/policy.yml`](db-schema.md) without `labels`: `to.functions`
+lists statement keywords (`DROP`, `SELECT`, ... or `UNKNOWN` for SQL that
+can't be read from the command line), a rule without `functions` is a
+catch-all, and the first rule that lists the statement's keyword wins over
+a catch-all. See [Database files](db-schema.md) for how the SQL is read.
+
+The per-environment rules in `.guard/db/policy.yml` are checked first;
+`sqlGate` decides what they leave open. If the command also touches a
+path that `commandGate` restricts, the stricter answer stands.
+
 ## `repositoryGate`: branch labels
 
 `repositoryGate` makes no decisions on its own. It tells guard which
@@ -112,7 +136,8 @@ policy rules then say what to do with them (see
 | Error | More than one `GuardManifest` |
 | Error | `repositoryGate.repose[].name` missing, not `owner/name`-shaped, or listed twice |
 | Error | A `repose[].protected` entry that isn't a valid pattern, or is empty |
-| Warning | `sqlGate` has content (not enforced yet) |
+| Error | `sqlGate`: no rules, an unknown client, an `action` that isn't `ALLOW`/`DENY`/`CONFIRM`, or an empty function |
+| Warning | A second catch-all (no `functions`) rule in `sqlGate`: the first one makes it unreachable |
 
 ## Example
 

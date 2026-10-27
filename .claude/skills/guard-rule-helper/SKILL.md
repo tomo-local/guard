@@ -103,11 +103,18 @@ Key rules to follow:
 
 ## Database clients (`.guard/db/`)
 
-Rules for `psql` / `mysql` by environment don't go in a policy file. Define
-environments by host/database in `.guard/db/connections.yml`, then write the
-rules in `.guard/db/policy.yml` with `to.environment` (`anyOf`/`noneOf` over
-those names). See `docs/db-schema.md`. Judging the SQL text itself isn't
-implemented.
+SQL rules for `psql` / `mysql` don't go in a policy file. They are written
+like the per-tool policies, with `functions` listing statement keywords
+(`DROP`, `SELECT`, ... or `UNKNOWN` for SQL that can't be read from the
+command line) and a rule without `functions` as the catch-all:
+
+- Environment-specific: label the environments in
+  `.guard/db/connections.yml` (`labels:`, with a `cli:` block of hosts /
+  databases), then write the rules in `.guard/db/policy.yml` with `to.labels`
+  and `to.functions`.
+- Whatever the environment: the manifest's `sqlGate` (same shape, no labels).
+
+The policy is checked before `sqlGate`. See `docs/db-schema.md`.
 
 ## The project manifest (`.guard/manifest.yaml`)
 
