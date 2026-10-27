@@ -19,7 +19,7 @@ func (p *CommandGatePolicy) Evaluate(cmd shellcmd.SimpleCommand) (Verdict, bool)
 	if p.Spec.Target.Tool != cmd.Tool {
 		return Verdict{}, false
 	}
-	rule, ok := matchRule(p.Spec.Rules, cmd)
+	rule, ok := matchRule(p.Spec.Rules, cmd, p.deps.Repo)
 	if !ok {
 		return Verdict{}, false
 	}
@@ -102,16 +102,18 @@ func renderMessageTemplate(s string, cmd shellcmd.SimpleCommand) string {
 // specific functions wins if the command's subcommand is listed in it,
 // otherwise a catch-all rule (no functions) applies. Either kind is
 // further restricted by To.Args when the rule sets it (e.g. only matching
-// "push" invocations that also carry "-f"/"--force").
-func matchRule(rules []Rule, cmd shellcmd.SimpleCommand) (Rule, bool) {
+// "push" invocations that also carry "-f"/"--force") and by To.Branch when it
+// does (e.g. only commands that act on a protected branch).
+func matchRule(rules []Rule, cmd shellcmd.SimpleCommand, repo RepoInfo) (Rule, bool) {
 	function := cmd.Function()
+	branches := &branchCtx{cmd: cmd, repo: repo}
 
 	if function != "" {
 		for _, r := range rules {
 			if len(r.To.Functions) == 0 {
 				continue
 			}
-			if !argsMatch(r.To.Args, cmd.Args) {
+			if !argsMatch(r.To.Args, cmd.Args) || !branches.matches(r.To.Branch) {
 				continue
 			}
 			for _, f := range r.To.Functions {
@@ -126,7 +128,7 @@ func matchRule(rules []Rule, cmd shellcmd.SimpleCommand) (Rule, bool) {
 		if len(r.To.Functions) != 0 {
 			continue
 		}
-		if !argsMatch(r.To.Args, cmd.Args) {
+		if !argsMatch(r.To.Args, cmd.Args) || !branches.matches(r.To.Branch) {
 			continue
 		}
 		return r, true

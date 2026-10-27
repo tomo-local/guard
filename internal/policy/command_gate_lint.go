@@ -26,6 +26,29 @@ func (p *CommandGatePolicy) Lint() []Issue {
 		}
 	}
 
+	for i, r := range p.Spec.Rules {
+		b := r.To.Branch
+		if b == nil {
+			continue
+		}
+		if p.Spec.Target.Tool != "git" {
+			c.Errorf("spec.rules[%d].to.branch: only valid for tool \"git\", this policy targets %q", i, p.Spec.Target.Tool)
+		}
+		if len(b.AnyOf) == 0 && len(b.NoneOf) == 0 {
+			c.Errorf("spec.rules[%d].to.branch.anyOf: set anyOf or noneOf with at least 1 label, or remove branch", i)
+		}
+		for _, label := range append(append([]string{}, b.AnyOf...), b.NoneOf...) {
+			if label != "" && !contains(KnownBranchLabels, label) {
+				c.Errorf("spec.rules[%d].to.branch: unknown label %q (known labels: %s)", i, label, strings.Join(KnownBranchLabels, ", "))
+			}
+		}
+		for _, label := range b.AnyOf {
+			if contains(b.NoneOf, label) {
+				c.Errorf("spec.rules[%d].to.branch: %q is in both anyOf and noneOf, so the rule can never match", i, label)
+			}
+		}
+	}
+
 	// Not expressible as a single field constraint: a second catch-all
 	// (no functions) rule in the same resource is reachable-but-pointless,
 	// since the first one already matches everything. Warning, not an
@@ -129,7 +152,25 @@ func witnessCommand(tool string, a, b To) string {
 			}
 		}
 	}
-	return "`" + strings.Join(parts, " ") + "`"
+	out := "`" + strings.Join(parts, " ") + "`"
+
+	var noneLab []string
+	for _, t := range []To{a, b} {
+		if t.Branch != nil {
+			noneLab = append(noneLab, t.Branch.NoneOf...)
+		}
+	}
+	for _, t := range []To{a, b} {
+		if t.Branch == nil {
+			continue
+		}
+		for _, label := range t.Branch.AnyOf {
+			if !contains(noneLab, label) {
+				return out + " on a " + label + " branch"
+			}
+		}
+	}
+	return out
 }
 
 // firstOverlap returns the first pair of rules (one from each side) that
@@ -163,7 +204,22 @@ func conditionsOverlap(a, b To) bool {
 	}
 	// An argv can hit each anyOf group while avoiding every noneOf token
 	// exactly when each group has a token outside the combined noneOf.
-	return hasOutside(aAny, none) && hasOutside(bAny, none)
+	if !hasOutside(aAny, none) || !hasOutside(bAny, none) {
+		return false
+	}
+
+	// Branch labels are independent flags a branch may or may not have, so
+	// the same reasoning applies to them.
+	var aLab, bLab, noneLab []string
+	if a.Branch != nil {
+		aLab = a.Branch.AnyOf
+		noneLab = append(noneLab, a.Branch.NoneOf...)
+	}
+	if b.Branch != nil {
+		bLab = b.Branch.AnyOf
+		noneLab = append(noneLab, b.Branch.NoneOf...)
+	}
+	return hasOutside(aLab, noneLab) && hasOutside(bLab, noneLab)
 }
 
 // hasOutside reports whether group is empty (no requirement) or has a token
@@ -206,6 +262,14 @@ func describeCondition(t To) string {
 		}
 		if len(t.Args.NoneOf) > 0 {
 			s += " noneOf=[" + strings.Join(t.Args.NoneOf, ",") + "]"
+		}
+	}
+	if t.Branch != nil {
+		if len(t.Branch.AnyOf) > 0 {
+			s += " branch.anyOf=[" + strings.Join(t.Branch.AnyOf, ",") + "]"
+		}
+		if len(t.Branch.NoneOf) > 0 {
+			s += " branch.noneOf=[" + strings.Join(t.Branch.NoneOf, ",") + "]"
 		}
 	}
 	return s

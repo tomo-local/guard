@@ -387,6 +387,35 @@ spec:
         next: "Suggest a non-destructive alternative, or ask the user to run it themselves."
 ```
 
+### Matching on branches (`to.branch`)
+
+The manifest's `repositoryGate` labels branches (`main`, `protected`) per
+repository, and a rule's `to.branch` uses those labels, so "nothing
+changes a protected branch" doesn't hard-code branch names in every
+policy. See [Branch labels](docs/manifest-schema.md#repositorygate-branch-labels)
+and [`to.branch`](docs/policy-schema.md#to-match-condition).
+
+```yaml
+# .guard/manifest.yaml
+spec:
+  repositoryGate:
+    repose:
+      - name: owner/name
+        main: main
+        protected: [main, staging, "docs/*"]
+```
+
+```yaml
+# .guard/policies/git/protected-deny.yaml
+spec:
+  target: { module: permission, tool: git }
+  action: DENY
+  rules:
+    - to:
+        functions: [push, commit, merge, reset, rebase]
+        branch: { anyOf: [protected] }
+```
+
 ### Custom checks (`options.customCheck`)
 
 Mirrors Istio's `action: CUSTOM` (delegating authorization to an external
@@ -429,6 +458,11 @@ is used as-is.
 - The manifest's path matching doesn't follow `cd` inside a command and
   treats any path-shaped argument as a path; see
   [GuardManifest](docs/manifest-schema.md#known-limitations).
+- Branch conditions (`to.branch`) take the repository from `git remote
+  get-url origin` in the directory `guard` runs in, and the branch from
+  the command (a `git push` refspec, `git branch -d <name>`) or else the
+  current branch. `git push --all/--mirror` and `git -C <path>` are not
+  tracked. `sqlGate` in the manifest is read but not enforced yet.
 - Scope is **Bash commands only**.
 - Subcommand (`functions`) detection is a heuristic: "the first argument
   that doesn't start with `-`". `git -C <path> push` mistakes `<path>`

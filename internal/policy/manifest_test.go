@@ -29,7 +29,10 @@ spec:
             anyOf: ["/src/*"]
         action: CONFIRM
   repositoryGate:
-    repose: [{name: x}]
+    repose:
+      - name: owner/repo
+        main: main
+        protected: [main, staging, "docs/*"]
 `
 
 func loadManifest(t *testing.T, body string) *GuardManifest {
@@ -116,8 +119,13 @@ func TestManifest_NoCommandGateNoOpinion(t *testing.T) {
 }
 
 func TestManifest_Lint(t *testing.T) {
-	if issues := loadManifest(t, manifestYAML).Lint(); HasErrors(issues) || !hasWarningContaining(issues, "repositoryGate") {
-		t.Fatalf("expected only the repositoryGate warning, got %v", issues)
+	if issues := loadManifest(t, manifestYAML).Lint(); len(issues) != 0 {
+		t.Fatalf("expected no issues, got %v", issues)
+	}
+
+	withSQL := manifestYAML + "  sqlGate:\n    target: {action: DENY}\n"
+	if issues := loadManifest(t, withSQL).Lint(); HasErrors(issues) || !hasWarningContaining(issues, "sqlGate") {
+		t.Fatalf("expected only the sqlGate warning, got %v", issues)
 	}
 
 	cases := []struct {
@@ -135,6 +143,12 @@ spec:
 `, "paths"},
 		{"bad pattern", strings.Replace(manifestYAML, `"/cmd/*"`, `"/cmd/["`, 1), "not a valid path pattern"},
 		{"wrong kind field", strings.Replace(manifestYAML, "kind: GuardManifest", "kind: Nope", 1), "kind"},
+		{"repo name without owner", strings.Replace(manifestYAML, "name: owner/repo", "name: repo", 1), "owner/name"},
+		{"repo name with a space", strings.Replace(manifestYAML, "name: owner/repo", `name: "owner/re po"`, 1), "owner/name"},
+		{"repo name missing", strings.Replace(manifestYAML, "      - name: owner/repo\n", "      - name: \"\"\n", 1), "name"},
+		{"duplicate repo", strings.Replace(manifestYAML, "        protected:", "        protected:", 1) + "      - name: owner/repo\n", "more than once"},
+		{"bad branch pattern", strings.Replace(manifestYAML, `"docs/*"`, `"docs/["`, 1), "not a valid branch pattern"},
+		{"empty protected entry", strings.Replace(manifestYAML, `"docs/*"`, `""`, 1), "protected"},
 		{"no rules", `apiVersion: ai-guard/v1
 kind: GuardManifest
 metadata: {name: m}
@@ -161,5 +175,37 @@ func TestManifest_OnlyOneAllowed(t *testing.T) {
 	}
 	if issues := lintManifestSet([]Policy{a}); len(issues) != 0 {
 		t.Fatalf("got %v", issues)
+	}
+}
+
+func TestManifest_BranchLabels(t *testing.T) {
+	m := loadManifest(t, manifestYAML)
+
+	cases := []struct {
+		repo, branch string
+		want         []string
+	}{
+		{"owner/repo", "main", []string{LabelMain, LabelProtected}},
+		{"owner/repo", "staging", []string{LabelProtected}},
+		{"owner/repo", "docs/guide", []string{LabelProtected}},
+		{"owner/repo", "docs/a/b", nil}, // "*" stays within one segment
+		{"owner/repo", "feature", nil},
+		{"owner/repo", "", nil},
+		{"other/repo", "main", nil}, // repository not described
+	}
+	for _, tc := range cases {
+		got := m.BranchLabels(tc.repo, tc.branch)
+		if len(got) != len(tc.want) {
+			t.Fatalf("BranchLabels(%q, %q) = %v, want %v", tc.repo, tc.branch, got, tc.want)
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Fatalf("BranchLabels(%q, %q) = %v, want %v", tc.repo, tc.branch, got, tc.want)
+			}
+		}
+	}
+
+	if got := loadManifest(t, "apiVersion: ai-guard/v1\nkind: GuardManifest\nmetadata: {name: m}\nspec: {}\n").BranchLabels("owner/repo", "main"); got != nil {
+		t.Fatalf("a manifest without repositoryGate labels nothing, got %v", got)
 	}
 }

@@ -26,7 +26,8 @@ spec:
         message:
           reason: "{cmd} is a write operation under /src."
           next: "Confirm with the user before proceeding."
-  # Read but not enforced yet.
+  # Labels branches for `to.branch` conditions in policy rules (`main`,
+  # `protected`); the repository is matched by its origin URL.
   repositoryGate:
     repose:
       - name: tomo-local/aaaaa
@@ -42,7 +43,3 @@ spec:
           - production
           - staging
           - docs/*
-  sqlGate:
-    target:
-      module: permission
-      action: DENY

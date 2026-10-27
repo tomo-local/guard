@@ -379,3 +379,85 @@ func TestLint_OverlapMessageNamesBothFilesAndAnExampleCommand(t *testing.T) {
 		t.Fatal("expected a hint detail")
 	}
 }
+
+func TestLint_BranchCondition(t *testing.T) {
+	protected := &LabelsMatch{AnyOf: []string{LabelProtected}}
+
+	ok := validPolicy()
+	ok.Spec.Rules[0].To.Branch = protected
+	if issues := lintAll(ok); len(issues) != 0 {
+		t.Fatalf("expected no issues, got %v", issues)
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(p *CommandGatePolicy)
+		want   string
+	}{
+		{"non-git tool", func(p *CommandGatePolicy) { p.Spec.Target.Tool = "rm" }, "only valid for tool"},
+		{"empty", func(p *CommandGatePolicy) { p.Spec.Rules[0].To.Branch = &LabelsMatch{} }, "branch.anyOf"},
+		{"unknown label", func(p *CommandGatePolicy) { p.Spec.Rules[0].To.Branch = &LabelsMatch{AnyOf: []string{"release"}} }, "unknown label"},
+		{"unknown noneOf label", func(p *CommandGatePolicy) { p.Spec.Rules[0].To.Branch = &LabelsMatch{NoneOf: []string{"release"}} }, "unknown label"},
+		{"same label both", func(p *CommandGatePolicy) {
+			p.Spec.Rules[0].To.Branch = &LabelsMatch{AnyOf: []string{LabelMain}, NoneOf: []string{LabelMain}}
+		}, "can never match"},
+		{"empty element", func(p *CommandGatePolicy) { p.Spec.Rules[0].To.Branch = &LabelsMatch{AnyOf: []string{""}} }, "branch"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := validPolicy()
+			p.Spec.Rules[0].To.Branch = protected
+			tc.mutate(p)
+			if !hasErrorContaining(lintAll(p), tc.want) {
+				t.Fatalf("expected an error mentioning %q, got %v", tc.want, lintAll(p))
+			}
+		})
+	}
+}
+
+func TestLint_BranchLabelsSeparatePolicies(t *testing.T) {
+	deny := validPolicy()
+	deny.SourcePath = "protected-deny.yaml"
+	deny.Spec.Action = ActionDeny
+	deny.Spec.Rules = []Rule{branchRule([]string{"push"}, &LabelsMatch{AnyOf: []string{LabelProtected}})}
+
+	confirm := validPolicy()
+	confirm.SourcePath = "write-confirm.yaml"
+	confirm.Spec.Rules = []Rule{branchRule([]string{"push"}, &LabelsMatch{NoneOf: []string{LabelProtected}})}
+
+	if issues := lintAll(deny, confirm); len(issues) != 0 {
+		t.Fatalf("anyOf/noneOf on the same label are disjoint, got %v", issues)
+	}
+
+	// Without a branch condition the second policy also covers protected branches.
+	confirm.Spec.Rules = []Rule{{To: To{Functions: []string{"push"}}}}
+	issues := lintAll(deny, confirm)
+	if !hasOverlapError(issues) {
+		t.Fatalf("expected an overlap, got %v", issues)
+	}
+	var detail string
+	for _, i := range issues {
+		for _, d := range i.Details {
+			if d.Label == "example" {
+				detail = d.Value
+			}
+		}
+	}
+	if detail != "`git push` on a protected branch matches both" {
+		t.Fatalf("unexpected example %q", detail)
+	}
+}
+
+func TestLint_DifferentBranchLabelsStillOverlap(t *testing.T) {
+	a := validPolicy()
+	a.SourcePath = "a.yaml"
+	a.Spec.Rules = []Rule{branchRule([]string{"push"}, &LabelsMatch{AnyOf: []string{LabelMain}})}
+	b := validPolicy()
+	b.SourcePath = "b.yaml"
+	b.Spec.Rules = []Rule{branchRule([]string{"push"}, &LabelsMatch{AnyOf: []string{LabelProtected}})}
+
+	// A branch can be both main and protected.
+	if !hasOverlapError(lintAll(a, b)) {
+		t.Fatal("expected an overlap: the main branch may also be protected")
+	}
+}

@@ -95,9 +95,27 @@ type To struct {
 	// matching -- matching is driven entirely by Functions/Args -- it
 	// only exists to document intent and is carried into the check log
 	// (sidecar.CommandLog) for readability.
-	Label     string     `yaml:"label,omitempty"`
-	Functions []string   `yaml:"functions,omitempty"`
-	Args      *ArgsMatch `yaml:"args,omitempty"`
+	Label     string       `yaml:"label,omitempty"`
+	Functions []string     `yaml:"functions,omitempty"`
+	Args      *ArgsMatch   `yaml:"args,omitempty"`
+	Branch    *LabelsMatch `yaml:"branch,omitempty"`
+}
+
+// Branch labels the manifest's repositoryGate gives to branches.
+const (
+	LabelMain      = "main"
+	LabelProtected = "protected"
+)
+
+// KnownBranchLabels lists every label a `to.branch` condition may name.
+var KnownBranchLabels = []string{LabelMain, LabelProtected}
+
+// LabelsMatch restricts a rule by the labels of the branch a command acts
+// on (git only). AnyOf: the branch has at least one of these labels.
+// NoneOf: it has none of them. At least one must be set; both combine with AND.
+type LabelsMatch struct {
+	AnyOf  []string `yaml:"anyOf,omitempty" validate:"omitempty,dive,required"`
+	NoneOf []string `yaml:"noneOf,omitempty" validate:"omitempty,dive,required"`
 }
 
 // ArgsMatch restricts a rule by literal tokens in the command's argv
