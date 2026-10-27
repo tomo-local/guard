@@ -225,6 +225,7 @@ guard report --format duckdb                 # guard initで設定したDBパス
 | `GUARD_RECORD_LOG_PATH` | `init`/`record`/`report` | `-log`（`record`）/ `-record-log`（`init`、`report`） | `.guard/logs/record`（UTC日付ごとに `YYYY-MM-DD.jsonl` を1つ） |
 | `GUARD_CONFIG_PATH` | `init`/`report` | `-config` | `.guard/config.yaml`（`init`が書き込み、`report`は読むだけ） |
 | `GUARD_MANIFEST_PATH` | `check`/`lint` | `-manifest` | `.guard/manifest.yaml`（任意。[GuardManifest](manifest-schema.md)を参照） |
+| `GUARD_DB_DIR` | `check`/`lint` | `-db` | `.guard/db`（任意の `connections.yml` と `policy.yml`。[データベース関連ファイル](db-schema.md)を参照） |
 
 ```bash
 GUARD_POLICIES_DIR=./some/other/dir guard lint
@@ -380,6 +381,28 @@ spec:
         branch: { anyOf: [protected] }
 ```
 
+### データベースクライアント（`.guard/db/`）
+
+`psql` と `mysql` は `.guard/db/` の2つのファイルで制御する。`connections.yml` がホストとデータベースから
+環境（production、staging など）を定義し、`policy.yml` が、開く接続の環境に応じてコマンドをどうするかを決める。
+[データベース関連ファイル](db-schema.md)を参照。
+
+```yaml
+# .guard/db/connections.yml
+spec:
+  environments:
+    - name: production
+      hosts: ["*.prod.example.com"]
+```
+
+```yaml
+# .guard/db/policy.yml
+spec:
+  rules:
+    - to: { environment: { anyOf: [production] } }
+      action: DENY
+```
+
 ### カスタムチェック（`options.customCheck`）
 
 Istio の `action: CUSTOM`（外部認可委譲）に相当する仕組み。マッチしたルールに紐づけて
@@ -422,6 +445,8 @@ spec:
 - ブランチ条件（`to.branch`）は、`guard` を実行したディレクトリで `git remote get-url origin` を実行して
   リポジトリを、コマンド（`git push` の refspec、`git branch -d <name>`）または現在のブランチからブランチを決める。
   `git push --all/--mirror` と `git -C <path>` は追跡しない。manifest の `sqlGate` は読み込むが未対応。
+- データベース接続（`.guard/db/`）はコマンドラインだけから読む（`psql`/`mysql` のフラグ、URI、位置引数のデータベース名）。
+  環境変数、`~/.pgpass`、`-f` のファイル、標準入力は読まない。
 - 対象スコープは **Bash コマンドのみ**。
 - サブコマンド（`functions`）の判定は「先頭の `-` で始まらない最初の引数」というヒューリスティック。
   `git -C <path> push` のように値を取るフラグの直後の引数を誤って function とみなす場合がある。

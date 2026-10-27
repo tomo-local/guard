@@ -101,6 +101,14 @@ Key rules to follow:
   policy with a `branch.noneOf` one when the same functions need different
   actions, so they don't overlap.
 
+## Database clients (`.guard/db/`)
+
+Rules for `psql` / `mysql` by environment don't go in a policy file. Define
+environments by host/database in `.guard/db/connections.yml`, then write the
+rules in `.guard/db/policy.yml` with `to.environment` (`anyOf`/`noneOf` over
+those names). See `docs/db-schema.md`. Judging the SQL text itself isn't
+implemented.
+
 ## The project manifest (`.guard/manifest.yaml`)
 
 Path-based rules ("nothing may touch `/cmd`") don't go in a policy file;

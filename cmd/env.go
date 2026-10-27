@@ -2,7 +2,7 @@ package cmd
 
 // env.go holds the environment variables that override this CLI's
 // defaults (GUARD_POLICIES_DIR, GUARD_LOG_PATH, GUARD_RECORD_LOG_PATH,
-// GUARD_CONFIG_PATH, GUARD_MANIFEST_PATH), following the same <APPNAME>_<SETTING> convention
+// GUARD_CONFIG_PATH, GUARD_MANIFEST_PATH, GUARD_DB_DIR), following the same <APPNAME>_<SETTING> convention
 // as made/habit-tracker's HABIT_CONFIG_DIR. Precedence is CLI flag > env
 // var > hardcoded default: each flag's *default* is computed from the
 // env var, so an explicit flag still wins.
@@ -19,6 +19,7 @@ const (
 	envRecordLogPath = "GUARD_RECORD_LOG_PATH"
 	envConfigPath    = "GUARD_CONFIG_PATH"
 	envManifestPath  = "GUARD_MANIFEST_PATH"
+	envDBDir         = "GUARD_DB_DIR"
 )
 
 func envOrDefault(key, def string) string {
@@ -42,6 +43,10 @@ func defaultRecordLogDir() string {
 
 func defaultManifestPath() string {
 	return envOrDefault(envManifestPath, ".guard/manifest.yaml")
+}
+
+func defaultDBDir() string {
+	return envOrDefault(envDBDir, ".guard/db")
 }
 
 func defaultConfigPath() string {
