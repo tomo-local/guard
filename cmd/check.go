@@ -41,7 +41,7 @@ func (c *Cmd) RunCheck(args []string) error {
 		return err
 	}
 
-	policies, loadErr := policy.LoadDir(*rulesDir)
+	policies, loadErr := policy.LoadDir(*rulesDir, policy.Deps{Runner: procRunner{}})
 	evaluator := engine.NewEvaluator(policies)
 
 	if rest := fs.Args(); len(rest) > 0 {

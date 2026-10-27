@@ -8,7 +8,7 @@ import (
 	"github.com/go-playground/validator/v10"
 )
 
-// validate runs the `validate:"..."` struct tags declared in schema.go. It
+// validate runs the `validate:"..."` struct tags declared in commandgate.go. It
 // is a package-level singleton because go-playground/validator caches
 // struct metadata internally and is documented as safe for concurrent use
 // once configured.
@@ -31,7 +31,7 @@ func newValidator() *validator.Validate {
 
 // validateStruct runs struct-tag validation on p and reports every failure
 // through c.
-func validateStruct(c *IssueCollector, p Policy) {
+func validateStruct(c *IssueCollector, p *CommandGatePolicy) {
 	err := validate.Struct(p)
 	if err == nil {
 		return
@@ -48,8 +48,8 @@ func validateStruct(c *IssueCollector, p Policy) {
 	}
 }
 
-// fieldPath strips the leading "Policy." root segment so messages read as
-// "spec.action: ..." rather than "Policy.spec.action: ...".
+// fieldPath strips the leading "CommandGatePolicy." root segment so messages read as
+// "spec.action: ..." rather than "CommandGatePolicy.spec.action: ...".
 func fieldPath(fe validator.FieldError) string {
 	ns := fe.Namespace()
 	if _, rest, ok := strings.Cut(ns, "."); ok {

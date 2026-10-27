@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 
+	"ai-guard-tracker/internal/engine"
 	"ai-guard-tracker/internal/policy"
 )
 
@@ -29,12 +30,12 @@ func (c *Cmd) RunLint(args []string) error {
 		return err
 	}
 
-	policies, err := policy.LoadDir(*rulesDir)
+	policies, err := policy.LoadDir(*rulesDir, policy.Deps{})
 	if err != nil {
 		return fmt.Errorf("load policies: %w", err)
 	}
 
-	issues := policy.Lint(policies)
+	issues := engine.Lint(policies)
 	for _, issue := range issues {
 		fmt.Fprintln(c.Stdout, issue.String())
 	}

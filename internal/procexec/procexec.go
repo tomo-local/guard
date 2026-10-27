@@ -1,7 +1,7 @@
 // Package procexec runs an external command with a timeout and captures
 // its stdout/stderr. It exists because this CLI shells out to an
-// external process in exactly two places -- internal/engine's
-// options.customCheck execution and internal/sidecar's DuckDB sync --
+// external process in exactly two places -- cmd's customCheck
+// runner (policy.CustomCheckRunner) and internal/sidecar's DuckDB sync --
 // and both need the same "bounded by a timeout, never panics on a
 // failing or timed-out command" behavior.
 package procexec

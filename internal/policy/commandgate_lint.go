@@ -6,23 +6,9 @@ import (
 	"strings"
 )
 
-// Lint validates a set of loaded policies and returns every issue found.
-// Policies are checked both individually (field presence/enum constraints
-// via validateStruct, plus structural checks below) and against each
-// other (e.g. for duplicate match conditions across files).
-func Lint(policies []Policy) []Issue {
-	var issues []Issue
-
-	for _, p := range policies {
-		issues = append(issues, lintOne(p)...)
-	}
-
-	issues = append(issues, lintCrossPolicy(policies)...)
-
-	return issues
-}
-
-func lintOne(p Policy) []Issue {
+// Lint checks this one policy: field presence/enum constraints via
+// validateStruct, plus structural checks below.
+func (p *CommandGatePolicy) Lint() []Issue {
 	c := NewIssueCollector(p.SourcePath)
 
 	validateStruct(c, p)
@@ -44,7 +30,7 @@ func lintOne(p Policy) []Issue {
 	return c.Issues()
 }
 
-// lintCrossPolicy flags resources that declare the exact same match
+// lintCommandGateSet flags resources that declare the exact same match
 // condition for the same tool. This is not an error -- strictest-wins
 // resolves it deterministically -- but it is almost always unintentional,
 // so it spans multiple source paths and can't go through a single-file
@@ -53,7 +39,7 @@ func lintOne(p Policy) []Issue {
 // The key deliberately excludes To.Label: Label plays no part in matching
 // (see To.Label's doc comment), so two rules differing only in Label are
 // still a genuine duplicate match condition.
-func lintCrossPolicy(policies []Policy) []Issue {
+func lintCommandGateSet(policies []Policy) []Issue {
 	type key struct {
 		tool      string
 		functions string
@@ -61,7 +47,11 @@ func lintCrossPolicy(policies []Policy) []Issue {
 	}
 	seen := map[key][]string{} // key -> source paths that declare it
 
-	for _, p := range policies {
+	for _, pol := range policies {
+		p, ok := pol.(*CommandGatePolicy)
+		if !ok {
+			continue
+		}
 		for _, r := range p.Spec.Rules {
 			fns := append([]string{}, r.To.Functions...)
 			sort.Strings(fns)

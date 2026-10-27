@@ -149,17 +149,19 @@ isn't behaving the way you expect.
 2. **Per-command matching**: for each decomposed command, every policy
    resource targeting that `tool` is checked; within each, [`to`
    matching](#to-match-condition) picks at most one rule.
-3. **Strictest-wins across matching resources**: if multiple resources'
-   rules match the same command, the strictest `spec.action` among them
+3. **CustomCheck override, if present**: when the matched rule has
+   `options.customCheck`, the script/command runs and its `when` list is
+   evaluated against the exit code. A match **always overrides** that
+   resource's own `spec.action` -- even downgrading a `DENY` or `CONFIRM`
+   to a plain `ALLOW`. No match (including on timeout) leaves the
+   resource's own `action`. In short: **`customCheck` > the resource's own
+   `action`**, decided per resource before any comparison with others.
+   Because every matching resource is evaluated this way, a resource's
+   `customCheck` runs even if another resource ends up deciding the result.
+4. **Strictest-wins across matching resources**: if multiple resources'
+   rules match the same command, the strictest resulting action among them
    wins (`DENY > CONFIRM > ALLOW`). Messages are deduplicated and joined
    across every matching resource/rule that tied at the strictest action.
-4. **CustomCheck override, if present**: when any tied rule has
-   `options.customCheck` (the first one found is used), the script/command
-   runs and its `when` list is evaluated against the exit code. A match
-   **always overrides** step 3's result -- even downgrading a `DENY` or
-   `CONFIRM` to a plain `ALLOW`. No match (including on timeout) leaves the
-   result from step 3 untouched. In short: **`customCheck` > the resource's
-   own `action`.**
 5. **No match at all**: if no resource's rule matches a decomposed
    command, the built-in default applies -- action `CONFIRM`, a generic
    reason naming the unmatched command, and a generic "review and confirm"

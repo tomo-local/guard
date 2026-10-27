@@ -1,4 +1,5 @@
-// Package engine matches decomposed shell commands against loaded policies
+// Package engine combines policies: it matches decomposed shell commands against
+// loaded policies by asking each one for its verdict
 // and produces an ALLOW/DENY/CONFIRM decision, aggregating "strictest wins"
 // both across policies that match a single command and across the multiple
 // commands a compound command line decomposes into.
@@ -6,6 +7,7 @@ package engine
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"ai-guard-tracker/internal/policy"
@@ -18,13 +20,13 @@ type Decision struct {
 	Action            policy.Action
 	Reason            string
 	Next              string
-	Label             string   // deduplicated To.Label values from the matched rule(s), joined with ", "; purely descriptive, see policy.To.Label
+	Label             string   // deduplicated labels from the matched verdict(s), joined with ", "; purely descriptive, see policy.To.Label
 	MatchedPolicies   []string // source paths that contributed to Action
-	CustomCheck       *CustomCheckResult
+	CustomCheck       *policy.CheckResult
 	UsedFallbackParse bool
 	Default           bool   // true when no policy matched and DefaultAction was used
 	Tool              string // set by EvaluateCommand; blank on the aggregated EvaluateAll result
-	Function          string // set by EvaluateCommand (firstFunction heuristic); blank on the aggregated EvaluateAll result or when the tool has no subcommand
+	Function          string // set by EvaluateCommand (shellcmd.SimpleCommand.Function heuristic); blank on the aggregated EvaluateAll result or when the tool has no subcommand
 }
 
 const defaultNext = "Review the command and confirm with the user before proceeding."
@@ -42,18 +44,25 @@ func severityRank(a policy.Action) int {
 	}
 }
 
-// Evaluator holds the policy set loaded for a run of `guard check` and
-// evaluates commands against it. It exists (rather than threading
-// []policy.Policy through every call) because evaluation genuinely has
-// state to hold onto -- the loaded policies -- for the lifetime of the
-// check.
+// Evaluator holds the command-evaluating policies loaded for a run of
+// `guard check`, ordered by priority, and evaluates commands against them.
+// It knows nothing about policy kinds: it only combines the verdicts that
+// each policy returns.
 type Evaluator struct {
-	Policies []policy.Policy
+	policies []policy.CommandEvaluator
 }
 
-// NewEvaluator returns an Evaluator bound to policies.
+// NewEvaluator returns an Evaluator over the policies that can evaluate
+// commands; the rest (e.g. kinds that cover other ground) are ignored.
 func NewEvaluator(policies []policy.Policy) *Evaluator {
-	return &Evaluator{Policies: policies}
+	var ce []policy.CommandEvaluator
+	for _, p := range policies {
+		if e, ok := p.(policy.CommandEvaluator); ok {
+			ce = append(ce, e)
+		}
+	}
+	sort.SliceStable(ce, func(i, j int) bool { return ce[i].Priority() < ce[j].Priority() })
+	return &Evaluator{policies: ce}
 }
 
 // EvaluateAll decomposes raw and evaluates every simple command it
@@ -77,81 +86,70 @@ func (e *Evaluator) EvaluateAll(raw string) (Decision, []Decision) {
 	return final, perCommand
 }
 
-// EvaluateCommand evaluates a single simple command against every policy
-// that targets its tool.
-//
-// When a rule sets options.customCheck, its result (when its `when` list
-// matches) always overrides the resource's plain Action -- even downgrading
-// a CONFIRM or DENY to a plain ALLOW. The override only doesn't apply when
-// customCheck didn't run, has no `when` match, or wasn't present at all.
+// EvaluateCommand evaluates a single simple command. Policies are consulted
+// one priority level at a time; the first level where any policy returns a
+// verdict decides (strictest verdict wins within the level), and lower
+// levels are not consulted. With no verdict at all, the default applies.
 func (e *Evaluator) EvaluateCommand(cmd shellcmd.SimpleCommand) Decision {
-	type match struct {
-		pol  policy.Policy
-		rule policy.Rule
-	}
+	function := cmd.Function()
 
-	var matches []match
-	for _, p := range e.Policies {
-		if p.Spec.Target.Tool != cmd.Tool {
+	for i := 0; i < len(e.policies); {
+		level := e.policies[i].Priority()
+		var verdicts []policy.Verdict
+		for ; i < len(e.policies) && e.policies[i].Priority() == level; i++ {
+			if v, ok := e.policies[i].Evaluate(cmd); ok {
+				verdicts = append(verdicts, v)
+			}
+		}
+		if len(verdicts) == 0 {
 			continue
 		}
-		if rule, ok := matchRule(p.Spec.Rules, cmd.Args); ok {
-			matches = append(matches, match{pol: p, rule: rule})
-		}
-	}
-
-	function := firstFunction(cmd.Args)
-
-	if len(matches) == 0 {
-		d := defaultDecision(commandString(cmd))
+		d := strictestVerdict(verdicts)
 		d.Tool = cmd.Tool
 		d.Function = function
 		return d
 	}
 
-	strictest := matches[0].pol.Spec.Action
-	for _, m := range matches[1:] {
-		if severityRank(m.pol.Spec.Action) > severityRank(strictest) {
-			strictest = m.pol.Spec.Action
+	d := defaultDecision(cmd.String())
+	d.Tool = cmd.Tool
+	d.Function = function
+	return d
+}
+
+// strictestVerdict combines the verdicts of one priority level: the
+// strictest action wins, and the messages, labels and sources of the
+// verdicts at that action are merged.
+func strictestVerdict(verdicts []policy.Verdict) Decision {
+	strictest := verdicts[0].Action
+	for _, v := range verdicts[1:] {
+		if severityRank(v.Action) > severityRank(strictest) {
+			strictest = v.Action
 		}
 	}
 
 	var reasons, nexts, labels, paths []string
-	var customCheck *policy.CustomCheck
-	for _, m := range matches {
-		if m.pol.Spec.Action != strictest {
+	var customCheck *policy.CheckResult
+	for _, v := range verdicts {
+		if v.Action != strictest {
 			continue
 		}
-		paths = append(paths, m.pol.SourcePath)
-		if m.rule.Message != nil {
-			reasons = appendUnique(reasons, renderMessageTemplate(m.rule.Message.Reason, cmd))
-			nexts = appendUnique(nexts, renderMessageTemplate(m.rule.Message.Next, cmd))
-		}
-		labels = appendUnique(labels, m.rule.To.Label)
-		if customCheck == nil && m.rule.Options != nil && m.rule.Options.CustomCheck != nil {
-			customCheck = m.rule.Options.CustomCheck
+		paths = append(paths, v.Source)
+		reasons = appendUnique(reasons, v.Reason)
+		nexts = appendUnique(nexts, v.Next)
+		labels = appendUnique(labels, v.Label)
+		if customCheck == nil && v.CustomCheck != nil {
+			customCheck = v.CustomCheck
 		}
 	}
 
-	decision := Decision{
+	return Decision{
 		Action:          strictest,
 		Reason:          strings.Join(reasons, "\n"),
 		Next:            strings.Join(nexts, "\n"),
 		Label:           strings.Join(labels, ", "),
 		MatchedPolicies: paths,
-		Tool:            cmd.Tool,
-		Function:        function,
+		CustomCheck:     customCheck,
 	}
-
-	if customCheck != nil {
-		result := RunCustomCheck(customCheck)
-		decision.CustomCheck = &result
-		if result.Override != "" {
-			decision.Action = result.Override
-		}
-	}
-
-	return decision
 }
 
 // defaultDecision is the built-in fallback used when no policy matches at
@@ -168,26 +166,6 @@ func defaultDecision(cmdStr string) Decision {
 		Next:    defaultNext,
 		Default: true,
 	}
-}
-
-// commandString renders a decomposed SimpleCommand back into a plain
-// "<tool> <args...>" string, used both for the {cmd} placeholder in
-// policy-authored messages and for the default-fallback Reason text.
-func commandString(cmd shellcmd.SimpleCommand) string {
-	if len(cmd.Args) == 0 {
-		return cmd.Tool
-	}
-	return cmd.Tool + " " + strings.Join(cmd.Args, " ")
-}
-
-// renderMessageTemplate replaces the {cmd} placeholder -- the only one
-// supported in v1 -- in a policy-authored Message.Reason/Message.Next with
-// the exact command that matched the rule (e.g. "git add -A").
-func renderMessageTemplate(s string, cmd shellcmd.SimpleCommand) string {
-	if s == "" {
-		return s
-	}
-	return strings.ReplaceAll(s, "{cmd}", commandString(cmd))
 }
 
 // aggregateStrictest combines several decisions (one per decomposed simple
@@ -231,73 +209,6 @@ func aggregateStrictest(decisions []Decision) Decision {
 		MatchedPolicies: uniqueStrings(paths),
 		Default:         allDefault,
 	}
-}
-
-// matchRule finds the rule (if any) that applies to args: a rule naming
-// specific functions wins if the command's subcommand is listed in it,
-// otherwise a catch-all rule (no functions) applies. Either kind is
-// further restricted by To.Args when the rule sets it (e.g. only matching
-// "push" invocations that also carry "-f"/"--force").
-func matchRule(rules []policy.Rule, args []string) (policy.Rule, bool) {
-	function := firstFunction(args)
-
-	if function != "" {
-		for _, r := range rules {
-			if len(r.To.Functions) == 0 {
-				continue
-			}
-			if !argsMatch(r.To.Args, args) {
-				continue
-			}
-			for _, f := range r.To.Functions {
-				if f == function {
-					return r, true
-				}
-			}
-		}
-	}
-
-	for _, r := range rules {
-		if len(r.To.Functions) != 0 {
-			continue
-		}
-		if !argsMatch(r.To.Args, args) {
-			continue
-		}
-		return r, true
-	}
-
-	return policy.Rule{}, false
-}
-
-// argsMatch reports whether args contains at least one of m.AnyOf as a
-// literal token. A nil/empty m always matches (the rule applies
-// regardless of flags).
-func argsMatch(m *policy.ArgsMatch, args []string) bool {
-	if m == nil || len(m.AnyOf) == 0 {
-		return true
-	}
-	for _, a := range args {
-		for _, want := range m.AnyOf {
-			if a == want {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// firstFunction treats the first argument that doesn't look like a flag as
-// the subcommand name. This is a heuristic: it misclassifies flags that
-// take a separate value (e.g. "git -C <path> push" sees "<path>" as the
-// function), a known v1 limitation documented in the README.
-func firstFunction(args []string) string {
-	for _, a := range args {
-		if a != "" && !strings.HasPrefix(a, "-") {
-			return a
-		}
-	}
-	return ""
 }
 
 func appendUnique(list []string, s string) []string {
