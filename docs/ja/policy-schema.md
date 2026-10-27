@@ -54,6 +54,7 @@ lintルールで後から弾く必要があった。`CONFIRM` を `spec.action` 
     functions: [sub, commands]                    # 任意
     args:
       anyOf: ["-f", "--force"]                     # 任意
+      noneOf: ["-x"]                               # 任意（anyOf と noneOf の片方または両方）
   options:                                         # 任意
     customCheck:
       path: "./scripts/x.sh"
@@ -76,7 +77,8 @@ lintルールで後から弾く必要があった。`CONFIRM` を `spec.action` 
 | `to.label` | string | 任意 | 自由記述の説明用テキスト（例: `read`、`write`、`destructive`、`network`、その他何でも）。**マッチングには一切関与しない** —— マッチングは `functions`/`args` だけで決まる。チェックログ（`CommandLog.label`）に記録され、可読性のために使われる。 |
 | `to.functions` | string配列 | 任意 | このruleが対象とするサブコマンド名（例: `[add, commit, push]`）。**省略するとcatch-all**になり、サブコマンドの概念がないフラットなコマンド（`rm`/`curl`等）のツール全体に適用される。 |
 | `to.args` | オブジェクト | 任意 | 下記参照。 |
-| `to.args.anyOf` | string配列 | `args`を設定する場合は必須 | 空でない文字列を最低1件。argvにこのトークンのいずれかが**リテラル一致**で含まれる場合にのみマッチする（正規表現/glob不可、値を取るオプションの引数部分のパースも行わない）。 |
+| `to.args.anyOf` | string配列 | `args`を設定する場合は `anyOf`/`noneOf` のどちらか | 空でない文字列。argvにこのトークンのいずれかが**リテラル一致**で含まれる場合にのみマッチする（正規表現/glob不可、値を取るオプションの引数部分のパースも行わない）。 |
+| `to.args.noneOf` | string配列 | `args`を設定する場合は `anyOf`/`noneOf` のどちらか | 空でない文字列。argvにこのトークンが**1つも含まれない**場合にのみマッチする。`anyOf` と併用した場合は両方を満たす必要がある。より厳しい別のポリシーに道を譲るために使う（[1コマンド1ポリシー](#1コマンド1ポリシー)を参照）。 |
 
 サブコマンドの検出方法: 先頭の `-` で始まらない最初の引数を「function」と
 みなすヒューリスティック。値を取るフラグの直後の引数を誤って function と
@@ -85,7 +87,7 @@ functionと判定される）。[既知の制限](../../README.md#known-limitati
 
 1つのリソース内の `rules[]` でのマッチ優先順位: 検出した function が
 `functions` に含まれるルールがあればそれが勝つ。どれにも一致しなければ、
-最初の catch-all ルール（`functions` 省略）が適用される。`args.anyOf` を
+最初の catch-all ルール（`functions` 省略）が適用される。`args.anyOf`/`args.noneOf` を
 設定している場合は、どちらの種類に対してもさらに絞り込む条件になる
 （`args` 条件に一致しないルールは、`functions`/catch-all の一致にかかわらず
 スキップされる）。
@@ -156,8 +158,9 @@ Istio の `action: CUSTOM` に相当する仕組み。判定の一部を外部�
    他のリソースとの比較より前に、リソースごとに決まる。マッチした
    すべてのリソースがこの扱いになるため、別のリソースが最終結果を決める
    場合でも、そのリソースの `customCheck` は実行される。
-4. **マッチしたリソース間でstrictest-wins**: 複数のリソースのruleが同じ
-   コマンドにマッチした場合、その結果のうち最も厳しいactionが勝つ
+4. **マッチしたリソース間でstrictest-wins**（安全策）: 同じコマンドにマッチし得る
+   ポリシーは `guard lint` がエラーにする（[1コマンド1ポリシー](#1コマンド1ポリシー)）が、
+   lintを無視したポリシー集合で複数マッチした場合は、その結果のうち最も厳しいactionが勝つ
    （`DENY > CONFIRM > ALLOW`）。最も厳しいactionで同率だったすべてのマッチする
    リソース/ruleのメッセージは重複を除いて結合される。
 5. **何もマッチしない場合**: 分解されたコマンドにどのリソースのruleも
@@ -167,7 +170,7 @@ Istio の `action: CUSTOM` に相当する仕組み。判定の一部を外部�
    `action` として書くことはできない。
 6. **複合コマンドの集約**: 手順1-5は分解された各コマンドごとに1つの
    `Decision` を生成する。コマンド行全体の最終的な判定は、再度それら全体に
-   対するstrictest-wins（手順3と同じ優先順位）で決まる。
+   対するstrictest-wins（手順4と同じ優先順位）で決まる。
 
 ## `guard lint` のルール
 
@@ -184,11 +187,25 @@ Istio の `action: CUSTOM` に相当する仕組み。判定の一部を外部�
 | エラー | `spec.target.tool` が空 |
 | エラー | `spec.action` が `ALLOW`/`DENY`/`CONFIRM` のいずれでもない |
 | エラー | `spec.rules` が空 |
-| エラー | `rules[].to.args.anyOf` が設定されているが空、または空文字列を含む |
+| エラー | `rules[].to.args` が設定されているが `anyOf` も `noneOf` も無い、またはどちらかが空文字列を含む |
+| エラー | 1つのruleの `anyOf` と `noneOf` に同じトークンがある —— そのruleは絶対にマッチしない |
+| エラー | 同じ tool の2つのポリシーが、あるコマンドに両方マッチし得る（[1コマンド1ポリシー](#1コマンド1ポリシー)を参照） |
 | エラー | `rules[].options.customCheck` に `path` と `command` のどちらも無い、または両方ある |
 | エラー | `rules[].options.customCheck.when[].key` が `"exit"` と異なる |
 | 警告 | 同一リソース内に2つ目のcatch-all（`functions`省略）ruleがある —— 最初のものが既にすべてにマッチするため到達不可能 |
-| 警告 | 2つ以上のリソースが同一の `{tool, functions, args}` マッチ条件を宣言している —— エラーではない（strictest-winsが確定的に解決する）が、ほとんどの場合意図しないもの。`to.label` はこのチェックから意図的に除外されている（マッチングに関与しないため）—— `label` だけが異なる2つのruleも重複として検出される。 |
+
+### 1コマンド1ポリシー
+
+どのコマンドも、判定するポリシーはちょうど1つでなければならない。`guard lint` は
+同じ `tool` のポリシーを2つずつ比べ、あるコマンド（function と args を合わせたもの）が
+両方のruleにマッチし得る場合にエラーにする。`to.label` はマッチングに関与しないので
+ポリシーを分ける役には立たず、1つのポリシー内のrule同士は比較されない（優先順位が決まっているため）。
+
+1つのツールを複数のポリシーに分けるときは、`args.noneOf` で条件が重ならないようにする。
+たとえば `git push` は CONFIRM、`git push -f` は DENY にする場合：
+
+- `git/write-confirm.yaml`: `functions: [push]` に `args.noneOf: ["-f", "--force"]`
+- `git/push-force-deny.yaml`: `functions: [push]` に `args.anyOf: ["-f", "--force"]`
 
 ## 例
 
@@ -213,7 +230,7 @@ spec:
         next: "Confirm the URL is safe with the user before proceeding."
 ```
 
-### フラグ単位のマッチ（DENYがCONFIRMに勝つ）
+### フラグ単位のマッチ（`noneOf` で重ならないようにする）
 
 ```yaml
 # .guard/policies/git/push-force-deny.yaml
@@ -237,9 +254,9 @@ spec:
         next: "Suggest a non-destructive alternative, or ask the user to run it themselves."
 ```
 
-`args` 条件の無い通常の `git/write-confirm.yaml`（CONFIRM）と組み合わせる
-ことで、`git push` 単体は `CONFIRM`、`git push -f`/`--force` は `DENY` になる
-（両方のリソースのruleがマッチし、`DENY` の方が厳しいため勝つ）。
+`push` のruleに `args.noneOf: ["-f", "--force"]` を付けた `git/write-confirm.yaml`
+（CONFIRM）と組み合わせることで、両者が同じコマンドにマッチしないようにする。
+`git push` 単体は `CONFIRM`、`git push -f`/`--force` は `DENY` になる。
 
 ### CONFIRMフォールバック付きのCustomCheck
 

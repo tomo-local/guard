@@ -10,7 +10,18 @@ spec:
   rules:
     - to:
         label: write
-        functions: [add, commit, push, pull, merge]
+        functions: [add, commit, pull, merge]
+      message:
+        reason: "{cmd} is a write operation."
+        next: "Confirm with the user before proceeding."
+
+    # push -f/--force is owned by push-force-deny.yaml; stepping aside keeps
+    # one command decided by exactly one policy.
+    - to:
+        label: write
+        functions: [push]
+        args:
+          noneOf: ["-f", "--force"]
       message:
         reason: "{cmd} is a write operation."
         next: "Confirm with the user before proceeding."

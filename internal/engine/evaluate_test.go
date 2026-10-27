@@ -538,3 +538,33 @@ func TestEvaluateCommand_FirstPriorityLevelWithVerdictDecides(t *testing.T) {
 		t.Fatalf("expected the level-100 fallback to decide DENY, got %+v", got)
 	}
 }
+
+// The shipped git shape: write-confirm's push steps aside (noneOf) for the
+// -f/--force that push-force-deny owns, so each command has one policy.
+func TestEvaluateCommand_NoneOfSplitsPushBetweenPolicies(t *testing.T) {
+	confirm := policy.NewCommandGate("git/write-confirm.yaml", policy.Spec{
+		Target: policy.Target{Module: policy.ModulePermission, Tool: "git"},
+		Action: policy.ActionConfirm,
+		Rules: []policy.Rule{{To: policy.To{
+			Functions: []string{"push"},
+			Args:      &policy.ArgsMatch{NoneOf: []string{"-f", "--force"}},
+		}}},
+	}, policy.Deps{})
+	e := NewEvaluator([]policy.Policy{confirm, toPolicy(pushForceDenyPolicy())})
+
+	cases := []struct {
+		args        []string
+		want        policy.Action
+		wantSources []string
+	}{
+		{[]string{"push"}, policy.ActionConfirm, []string{"git/write-confirm.yaml"}},
+		{[]string{"push", "-f"}, policy.ActionDeny, []string{"git/push-force-deny.yaml"}},
+		{[]string{"push", "--force"}, policy.ActionDeny, []string{"git/push-force-deny.yaml"}},
+	}
+	for _, tc := range cases {
+		got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: tc.args})
+		if got.Action != tc.want || len(got.MatchedPolicies) != 1 || got.MatchedPolicies[0] != tc.wantSources[0] {
+			t.Fatalf("git %v: got %s from %v, want %s from %v", tc.args, got.Action, got.MatchedPolicies, tc.want, tc.wantSources)
+		}
+	}
+}

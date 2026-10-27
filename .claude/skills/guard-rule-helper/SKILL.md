@@ -36,7 +36,8 @@ spec:
         label: <string>                # optional, free text -- purely descriptive, NOT used for matching
         functions: [sub, commands]    # omit entirely for flat commands (rm, curl, ...) -> catch-all
         args:
-          anyOf: ["-f", "--force"]    # optional: literal argv token match, no regex/globs
+          anyOf: ["-f", "--force"]    # optional: argv must contain one of these (literal match, no regex/globs)
+          noneOf: ["-x"]              # optional: argv must contain none of these (anyOf and/or noneOf)
       options:
         confirm:                     # optional, ALLOW only -- turns this rule's ALLOW into a
           enabled: true              # human-confirmation gate. NEVER combine with action: DENY.
@@ -89,12 +90,13 @@ Key rules to follow:
   of creating a duplicate file. Only create a new file when the user needs a
   *different* action for the same tool (e.g. `git/allow.yaml` for
   ALLOW-with-confirm, `git/destructive-deny.yaml` for DENY).
-- **Distinguishing by flags** (e.g. "`git push` is fine, `git push -f` is
-  not") is two separate resources for the same tool, not one resource with
-  conditional logic: a normal ALLOW(+confirm) rule with no `args`, plus a
-  separate DENY resource whose rule has `args.anyOf` naming the dangerous
-  flags. The existing strictest-wins evaluation (DENY > CONFIRM > ALLOW)
-  resolves it automatically when both match. See
+- **One command, one policy**: two policies for the same tool must never
+  match the same command -- `guard lint` reports an error if they can.
+  **Distinguishing by flags** (e.g. "`git push` is CONFIRM, `git push -f`
+  is DENY") is two separate resources whose conditions don't overlap: the
+  lenient one's rule carries `args.noneOf` naming the dangerous flags, and
+  the strict one's rule carries `args.anyOf` with the same flags. See
+  `.guard/policies/git/write-confirm.yaml` and
   `.guard/policies/git/push-force-deny.yaml` for a worked example.
 - **`message.reason`/`message.next` are English**, not Japanese -- they are
   sent verbatim to Claude as `permissionDecisionReason`, not shown as
@@ -108,9 +110,9 @@ Key rules to follow:
 
 1. Run `guard lint` (or `go run . lint` from a source checkout without a
    built binary) and fix every error it reports before telling the user
-   you're done. Warnings (e.g. "duplicate match condition... strictest
-   action wins automatically") are often expected for the flag-distinction
-   pattern above -- read the warning text before treating it as a problem.
+   you're done. An overlap error ("both policies match the same command")
+   means the two policies need disjoint conditions -- add `args.noneOf`
+   to the more lenient one; don't leave it for strictest-wins.
 2. Show the user a concise diff (or just the new/changed file content) of
    what changed, and a one-line explanation of the resulting behavior (e.g.
    "`git push` -> CONFIRM, `git push -f`/`--force` -> DENY").

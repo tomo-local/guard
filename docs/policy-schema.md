@@ -55,6 +55,7 @@ place, since a resource can only ever hold one `action`.
     functions: [sub, commands]                    # optional
     args:
       anyOf: ["-f", "--force"]                     # optional
+      noneOf: ["-x"]                               # optional (anyOf and/or noneOf)
   options:                                         # optional
     customCheck:
       path: "./scripts/x.sh"
@@ -77,7 +78,8 @@ place, since a resource can only ever hold one `action`.
 | `to.label` | string | no | Free-text, purely descriptive (e.g. `read`, `write`, `destructive`, `network`, or anything else). **Plays no part in matching** -- matching is driven entirely by `functions`/`args`. Carried into the check log (`CommandLog.label`) for readability. |
 | `to.functions` | list of strings | no | Subcommand names this rule applies to (e.g. `[add, commit, push]`). **Omit entirely** to make the rule a catch-all for every invocation of the tool (used for flat commands like `rm`/`curl` that have no subcommand concept). |
 | `to.args` | object | no | See below. |
-| `to.args.anyOf` | list of strings | yes, if `args` is set | At least 1 non-empty string. The rule only matches commands whose argv contains **at least one** of these tokens, literally (no regex/globs, no flag-value parsing). |
+| `to.args.anyOf` | list of strings | one of `anyOf`/`noneOf`, if `args` is set | Non-empty strings. The rule only matches commands whose argv contains **at least one** of these tokens, literally (no regex/globs, no flag-value parsing). |
+| `to.args.noneOf` | list of strings | one of `anyOf`/`noneOf`, if `args` is set | Non-empty strings. The rule only matches commands whose argv contains **none** of these tokens. Combined with `anyOf`, both must hold. Use it to step aside for a stricter sibling policy (see [one command, one policy](#one-command-one-policy)). |
 
 How a command's subcommand is detected: the first argument that doesn't
 start with `-` is treated as the "function". This is a heuristic -- it
@@ -87,8 +89,8 @@ Limitations](../README.md#known-limitations-v1).
 
 Matching precedence within one resource's `rules[]`: a rule naming
 `functions` that lists the command's detected function wins; if none
-matches, the first catch-all rule (no `functions`) applies. `args.anyOf`,
-when set, further restricts either kind -- a rule with an `args` condition
+matches, the first catch-all rule (no `functions`) applies. `args.anyOf`/
+`args.noneOf`, when set, further restrict either kind -- a rule with an `args` condition
 that doesn't match is skipped entirely, even if its `functions`/catch-all
 would otherwise apply.
 
@@ -158,9 +160,11 @@ isn't behaving the way you expect.
    `action`**, decided per resource before any comparison with others.
    Because every matching resource is evaluated this way, a resource's
    `customCheck` runs even if another resource ends up deciding the result.
-4. **Strictest-wins across matching resources**: if multiple resources'
-   rules match the same command, the strictest resulting action among them
-   wins (`DENY > CONFIRM > ALLOW`). Messages are deduplicated and joined
+4. **Strictest-wins across matching resources** (a safety net): `guard
+   lint` rejects policies that can match the same command (see [one
+   command, one policy](#one-command-one-policy)), but if a set that
+   ignores lint still has several matches, the strictest resulting action
+   among them wins (`DENY > CONFIRM > ALLOW`). Messages are deduplicated and joined
    across every matching resource/rule that tied at the strictest action.
 5. **No match at all**: if no resource's rule matches a decomposed
    command, the built-in default applies -- action `CONFIRM`, a generic
@@ -168,7 +172,7 @@ isn't behaving the way you expect.
    next step. This default is never writable as a YAML `action`.
 6. **Aggregating a compound command**: steps 1-5 produce one `Decision`
    per decomposed command; the final decision for the whole command line
-   is, again, strictest-wins across all of them (same ranking as step 3).
+   is, again, strictest-wins across all of them (same ranking as step 4).
 
 ## `guard lint` rules
 
@@ -185,11 +189,28 @@ checks:
 | Error | `spec.target.tool` empty |
 | Error | `spec.action` not one of `ALLOW`/`DENY`/`CONFIRM` |
 | Error | `spec.rules` empty |
-| Error | `rules[].to.args.anyOf` set but empty, or containing an empty string |
+| Error | `rules[].to.args` set with neither `anyOf` nor `noneOf`, or either containing an empty string |
+| Error | The same token in both `anyOf` and `noneOf` of one rule -- the rule can never match |
+| Error | Two policies for the same tool can both match some command (see [one command, one policy](#one-command-one-policy)) |
 | Error | `rules[].options.customCheck` has neither `path` nor `command`, or has both |
 | Error | `rules[].options.customCheck.when[].key` != `"exit"` |
 | Warning | A second catch-all (no `functions`) rule in the same resource -- the first one already makes it unreachable |
-| Warning | Two or more resources declare the exact same `{tool, functions, args}` match condition -- not an error (strictest-wins resolves it deterministically), but almost always unintentional. `to.label` is deliberately excluded from this check, since it plays no part in matching -- two rules differing only in `label` are still flagged. |
+
+### One command, one policy
+
+Any given command must be decided by exactly one policy. `guard lint`
+compares every pair of policies for the same `tool` and reports an error
+when some command (function + args together) matches a rule in both.
+`to.label` plays no part in matching, so it does not separate two
+policies, and rules inside one policy are never compared with each other
+(their precedence is fixed).
+
+To split a tool between policies, make the conditions disjoint with
+`args.noneOf`. For example, `git push` is CONFIRM but `git push -f` is
+DENY:
+
+- `git/write-confirm.yaml`: `functions: [push]` with `args.noneOf: ["-f", "--force"]`
+- `git/push-force-deny.yaml`: `functions: [push]` with `args.anyOf: ["-f", "--force"]`
 
 ## Examples
 
@@ -214,7 +235,7 @@ spec:
         next: "Confirm the URL is safe with the user before proceeding."
 ```
 
-### Flag-level matching (DENY wins over CONFIRM)
+### Flag-level matching (disjoint with `noneOf`)
 
 ```yaml
 # .guard/policies/git/push-force-deny.yaml
@@ -238,10 +259,10 @@ spec:
         next: "Suggest a non-destructive alternative, or ask the user to run it themselves."
 ```
 
-Paired with a plain `git/write-confirm.yaml` CONFIRM rule for `push` with
-no `args` condition: `git push` alone evaluates to `CONFIRM`, while `git
-push -f`/`--force` evaluates to `DENY` (both resources' rules match;
-`DENY` is stricter).
+Paired with `git/write-confirm.yaml`, whose `push` rule carries
+`args.noneOf: ["-f", "--force"]` so the two never match the same command:
+`git push` alone evaluates to `CONFIRM`, while `git push -f`/`--force`
+evaluates to `DENY`.
 
 ### CustomCheck with a CONFIRM fallback
 
