@@ -44,9 +44,10 @@ type CustomCheckLog struct {
 	Override string `json:"override,omitempty"`
 }
 
-// AppendCheckLog appends entry as one JSON line to path. See
-// appendJSONLine for why JSON Lines (rather than a rewritten JSON array)
-// is safe under concurrent `guard check` processes.
-func AppendCheckLog(path string, entry CheckLogEntry) error {
-	return appendJSONLine(path, entry)
+// AppendCheckLog appends entry as one JSON line to dir's log file for
+// entry.Timestamp's day (UTC). See appendJSONLine for why JSON Lines
+// (rather than a rewritten JSON array) is safe under concurrent
+// `guard check` processes.
+func AppendCheckLog(dir string, entry CheckLogEntry) error {
+	return appendJSONLine(dir, entry.Timestamp, entry)
 }

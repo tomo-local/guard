@@ -12,7 +12,7 @@ const recordUsage = `Usage:
   <hook-json> | guard record    # PostToolUse hook payload on stdin
 
 Options:
-  -log string   record log path (default ".guard/logs/record.jsonl", env GUARD_RECORD_LOG_PATH)
+  -log string   record log directory, one file per UTC day (default ".guard/logs/record", env GUARD_RECORD_LOG_PATH)
 
 Precedence: -flag > env var > built-in default.
 
@@ -29,7 +29,7 @@ log-write failure is only a warning on stderr.
 func (c *Cmd) RunRecord(args []string) error {
 	flagSet := flag.NewFlagSet("record", flag.ContinueOnError)
 	flagSet.SetOutput(c.Stderr)
-	logPath := flagSet.String("log", defaultRecordLogPath(), "record log path (env GUARD_RECORD_LOG_PATH)")
+	logDir := flagSet.String("log", defaultRecordLogDir(), "record log directory (env GUARD_RECORD_LOG_PATH)")
 	flagSet.Usage = func() { fmt.Fprint(c.Stderr, recordUsage) }
 	if err := flagSet.Parse(args); err != nil {
 		return err
@@ -45,7 +45,7 @@ func (c *Cmd) RunRecord(args []string) error {
 		return nil
 	}
 
-	if err := sidecar.AppendRecordLog(*logPath, entry); err != nil {
+	if err := sidecar.AppendRecordLog(*logDir, entry); err != nil {
 		fmt.Fprintf(c.Stderr, "warning: failed to write record log: %v\n", err)
 	}
 	return nil

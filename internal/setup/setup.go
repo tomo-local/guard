@@ -35,8 +35,9 @@ Add this to .claude/settings.json to run "guard check" before every Bash command
 
 // Result summarizes what Run did, for the caller to report to the user.
 type Result struct {
-	LogsDir     string
-	PoliciesDir string
+	CheckLogDir  string
+	RecordLogDir string
+	PoliciesDir  string
 	// ExistingPolicyCount is how many policies were already present in
 	// PoliciesDir before Run looked at it. When > 0, SeededPolicyCount is
 	// always 0 -- an existing policies directory is left untouched.
@@ -44,14 +45,17 @@ type Result struct {
 	SeededPolicyCount   int
 }
 
-// Run creates the logs directory (the parent of logPath) and seeds
-// policiesDir with the starter policies found under starterRoot in
-// starterFS, but only when policiesDir has no policy manifests yet.
-func Run(policiesDir, logPath string, starterFS fs.FS) (Result, error) {
-	res := Result{PoliciesDir: policiesDir, LogsDir: filepath.Dir(logPath)}
+// Run creates the check/record log directories and seeds policiesDir
+// with the starter policies found under starterRoot in starterFS, but
+// only when policiesDir has no policy manifests yet.
+func Run(policiesDir, checkLogDir, recordLogDir string, starterFS fs.FS) (Result, error) {
+	res := Result{PoliciesDir: policiesDir, CheckLogDir: checkLogDir, RecordLogDir: recordLogDir}
 
-	if err := os.MkdirAll(res.LogsDir, 0o755); err != nil {
-		return res, fmt.Errorf("create logs dir %q: %w", res.LogsDir, err)
+	if err := mkdirAllLogDir(res.CheckLogDir); err != nil {
+		return res, fmt.Errorf("create check log dir: %w", err)
+	}
+	if err := mkdirAllLogDir(res.RecordLogDir); err != nil {
+		return res, fmt.Errorf("create record log dir: %w", err)
 	}
 
 	existing, err := policy.LoadDir(policiesDir)
@@ -69,6 +73,21 @@ func Run(policiesDir, logPath string, starterFS fs.FS) (Result, error) {
 	}
 	res.SeededPolicyCount = written
 	return res, nil
+}
+
+// mkdirAllLogDir is os.MkdirAll with a clearer error when dir already
+// exists as a regular file -- the shape a GUARD_LOG_PATH/
+// GUARD_RECORD_LOG_PATH left over from before logs were split by day
+// (pointing at a single check.jsonl/record.jsonl file, not a directory)
+// would produce.
+func mkdirAllLogDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		if info, statErr := os.Stat(dir); statErr == nil && !info.IsDir() {
+			return fmt.Errorf("%q already exists as a file, not a directory -- if GUARD_LOG_PATH/GUARD_RECORD_LOG_PATH (or -log/-record-log) is still set to a pre-split check.jsonl/record.jsonl path, point it at a directory instead (e.g. \".guard/logs/check\"): %w", dir, err)
+		}
+		return err
+	}
+	return nil
 }
 
 // writeStarterPolicies copies every embedded starter manifest into dir,

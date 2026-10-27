@@ -62,9 +62,9 @@ report` are all implemented.
   are decomposed via a real shell AST parser, and the strictest verdict
   (`DENY > CONFIRM > ALLOW`) wins across all of them.
 - **Raw audit logs**: both the decisions (`guard check` ->
-  `.guard/logs/check.jsonl`) and what commands actually did
-  (`guard record` -> `.guard/logs/record.jsonl`) are recorded as JSON
-  Lines, unsummarized.
+  `.guard/logs/check/YYYY-MM-DD.jsonl`) and what commands actually did
+  (`guard record` -> `.guard/logs/record/YYYY-MM-DD.jsonl`) are recorded
+  as JSON Lines, unsummarized, split into one file per UTC day.
 - **Configurable via env vars** (`GUARD_POLICIES_DIR`, `GUARD_LOG_PATH`,
   `GUARD_RECORD_LOG_PATH`, `GUARD_CONFIG_PATH`) so a distributed binary doesn't need
   per-invocation flags.
@@ -77,7 +77,7 @@ go build -o bin/guard .
 ```
 
 `guard init` seeds `.guard/policies/` with starter policies (if empty)
-and creates `.guard/logs/`, then prints the Claude Code hook snippet to
+and creates `.guard/logs/check/` and `.guard/logs/record/`, then prints the Claude Code hook snippet to
 add to `.claude/settings.json` yourself -- see
 [Registering the Claude Code hooks](docs/hooks-setup.md) for the full
 setup (English) or [`docs/ja/hooks-setup.md`](docs/ja/hooks-setup.md)
@@ -107,7 +107,9 @@ guard init
   this CLI's own starter policies (5 files for `git`/`rm`/`curl`, embedded
   into the binary via `go:embed`). If policies already exist there, it
   **never overwrites anything**.
-- Also creates `.guard/logs/` (the log output directory).
+- Also creates `.guard/logs/check/` and `.guard/logs/record/` (the log
+  output directories -- each holds one `YYYY-MM-DD.jsonl` file per UTC
+  day).
 - **Also sets up `.guard/config.yaml`** (this CLI's own project settings,
   separate from the Bash policies), currently just whether to use `guard
   report --format duckdb` and where its database file should live:
@@ -122,8 +124,9 @@ guard init
 - **Never writes to `.claude/settings.json` automatically** (to avoid
   clobbering existing configuration) -- it just prints the hook JSON
   snippet to add yourself.
-- `-rules`/`-log`/`-config` resolve the same way as `guard check`/`guard
-  lint`/`guard report` (see [Configuration](#configuration) below).
+- `-rules`/`-log`/`-record-log`/`-config` resolve the same way as `guard
+  check`/`guard lint`/`guard report` (see [Configuration](#configuration)
+  below).
 
 ### `guard check`
 
@@ -146,8 +149,8 @@ echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | guard check
   0. If `tool_name` isn't `Bash`, it prints `{}` and does nothing (out of
   scope).
 
-Every decision is recorded to `.guard/logs/check.jsonl` (JSON Lines,
-append-only, one decision per line).
+Every decision is recorded to `.guard/logs/check/YYYY-MM-DD.jsonl` (JSON
+Lines, append-only, one decision per line, one file per UTC day).
 
 Registering `guard check` as the `PreToolUse` hook is what actually
 makes it take effect; see
@@ -156,9 +159,10 @@ makes it take effect; see
 ### `guard record`
 
 Reads a Claude Code **PostToolUse** hook payload from stdin and appends
-what a Bash command actually did to `.guard/logs/record.jsonl` -- the
-command, raw `stdout`/`stderr` (verbatim, not summarized), and whether it
-was interrupted. There is no CLI mode; it only makes sense as a hook.
+what a Bash command actually did to `.guard/logs/record/YYYY-MM-DD.jsonl`
+(one file per UTC day) -- the command, raw `stdout`/`stderr` (verbatim,
+not summarized), and whether it was interrupted. There is no CLI mode;
+it only makes sense as a hook.
 
 ```bash
 echo '{"tool_name":"Bash","tool_input":{"command":"echo hi"},"tool_response":{"stdout":"hi\n"}}' | guard record
@@ -189,8 +193,8 @@ least one error.
 
 ### `guard report`
 
-Aggregates `.guard/logs/check.jsonl` and `.guard/logs/record.jsonl` into a
-summary: action/mode counts, per-tool breakdown, which `tool`+subcommand
+Aggregates every file under `.guard/logs/check/` and `.guard/logs/record/`
+into a summary: action/mode counts, per-tool breakdown, which `tool`+subcommand
 combinations trigger DENY/CONFIRM most often, `options.customCheck`
 run/timeout/override counts, a daily timeline, and how many recorded
 commands were interrupted.
@@ -212,15 +216,15 @@ guard report --format duckdb                 # load into the DB path set up by `
   duckdb`) and a database path -- from `-out` if given, otherwise from
   `.guard/config.yaml`'s `duckdb.path` (set up by `guard init`; see
   below). It (re)builds `checks`/`records` tables in that database file
-  from the current JSONL content -- a full reload every run, not an
-  incremental append -- and prints a month x action count summary that
-  the database itself rendered. The `.duckdb` file is left behind for
-  you to run your own SQL against afterwards (`duckdb <path>`); guard
-  doesn't try to be the only way to query it.
+  from the current JSONL content across every `*.jsonl` day-file -- a full
+  reload every run, not an incremental append -- and prints a month x
+  action count summary that the database itself rendered. The `.duckdb`
+  file is left behind for you to run your own SQL against afterwards
+  (`duckdb <path>`); guard doesn't try to be the only way to query it.
 - `-log`/`-record-log`/`-config` resolve the same way as the other
   commands (`-flag` > env var > default; see [Configuration](#configuration)).
-- Neither log needs to exist yet -- a missing or empty log produces a
-  report that says so, not an error (exit code is always `0` except on a
+- Neither log directory needs to exist yet -- a missing or empty one
+  produces a report that says so, not an error (exit code is always `0` except on a
   usage/runtime error, e.g. an unknown `-format`, or `-format duckdb`
   with no `-out` and no configured path, or the `duckdb` CLI missing).
 - No date-range or tool/action filtering in v1; see [Known Limitations
@@ -235,13 +239,22 @@ flags every time. Precedence is **`-flag` > env var > built-in default**.
 | Env var | Applies to | Flag | Default |
 |---|---|---|---|
 | `GUARD_POLICIES_DIR` | `init`/`check`/`lint` | `-rules` | `.guard/policies` |
-| `GUARD_LOG_PATH` | `init`/`check`/`report` | `-log` | `.guard/logs/check.jsonl` (`init` creates this path's parent directory) |
-| `GUARD_RECORD_LOG_PATH` | `record`/`report` | `-log` (`record`) / `-record-log` (`report`) | `.guard/logs/record.jsonl` |
+| `GUARD_LOG_PATH` | `init`/`check`/`report` | `-log` | `.guard/logs/check` (one `YYYY-MM-DD.jsonl` per UTC day; `init` creates this directory) |
+| `GUARD_RECORD_LOG_PATH` | `init`/`record`/`report` | `-log` (`record`) / `-record-log` (`init`, `report`) | `.guard/logs/record` (one `YYYY-MM-DD.jsonl` per UTC day) |
 | `GUARD_CONFIG_PATH` | `init`/`report` | `-config` | `.guard/config.yaml` (`init` writes it; `report` only reads it) |
 
 ```bash
 GUARD_POLICIES_DIR=./some/other/dir guard lint
 ```
+
+> **Breaking change**: `GUARD_LOG_PATH`/`GUARD_RECORD_LOG_PATH` (and
+> `-log`/`-record-log`) used to name a single `.jsonl` *file*
+> (`.guard/logs/check.jsonl`); they now name a *directory* that holds one
+> `YYYY-MM-DD.jsonl` file per UTC day. If you have either set to the old
+> file path, update it to a directory (e.g. `.guard/logs/check`) --
+> pointing it at the old file path makes `guard check`/`guard record`
+> silently stop logging and `guard init` fail outright, since `mkdir` on
+> an existing file always fails.
 
 ## Writing Policies
 
@@ -318,7 +331,7 @@ matched (e.g. `git add -A .`).
   auditing the policy (e.g. `write`, `destructive`, `network`, or
   anything else you find useful) -- it plays **no part in matching**,
   which is driven entirely by `functions`/`args`. It's carried into the
-  check log (`.guard/logs/check.jsonl`'s `commands[].label`) for
+  check log (`.guard/logs/check/*.jsonl`'s `commands[].label`) for
   readability.
 
 ### Matching on flags (`to.args.anyOf`)
@@ -405,12 +418,12 @@ is used as-is.
   back as raw shell syntax, so they never match a `functions` list and
   fall through to the catch-all/default.
 - `guard report` has no date-range or tool/action filtering, and doesn't
-  join `check.jsonl`/`record.jsonl` entries together (Claude Code's
-  `PreToolUse` payload carries no `tool_use_id`, so there's no reliable
-  key to join on) -- each log is aggregated independently. The same
-  applies to `-format duckdb`'s `checks`/`records` tables: there's no
-  shared key to `JOIN` them on either.
-- The `function` field on `check.jsonl`'s `commands[]` (used for `guard
+  join check/record entries together (Claude Code's `PreToolUse` payload
+  carries no `tool_use_id`, so there's no reliable key to join on) --
+  each log is aggregated independently. The same applies to `-format
+  duckdb`'s `checks`/`records` tables: there's no shared key to `JOIN`
+  them on either.
+- The `function` field on the check log's `commands[]` (used for `guard
   report`'s tool+function aggregation) only exists on entries logged
   after it was introduced; older log lines simply omit it.
 

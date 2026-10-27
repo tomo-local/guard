@@ -55,9 +55,9 @@ report` をすべて実装している。
   委譲し、その終了コードで判定を上書きできる（Istio の `action: CUSTOM` に相当）。
 - **複合コマンド対応**: `&&`/`;`/`|`/サブシェル/コマンド置換を実際のシェルAST
   パーサーで分解し、最も厳しい判定（`DENY > CONFIRM > ALLOW`）が全体に適用される。
-- **生のまま記録するログ**: 判定結果（`guard check` → `.guard/logs/check.jsonl`）
-  と実際の実行結果（`guard record` → `.guard/logs/record.jsonl`）の両方を
-  要約せずJSON Linesで記録する。
+- **生のまま記録するログ**: 判定結果（`guard check` → `.guard/logs/check/YYYY-MM-DD.jsonl`）
+  と実際の実行結果（`guard record` → `.guard/logs/record/YYYY-MM-DD.jsonl`）の両方を
+  要約せずJSON Linesで、UTC日付ごとに1ファイルへ分けて記録する。
 - **環境変数で設定可能**（`GUARD_POLICIES_DIR`、`GUARD_LOG_PATH`、
   `GUARD_RECORD_LOG_PATH`、`GUARD_CONFIG_PATH`）。配布したバイナリに毎回フラグを渡す必要が無い。
 
@@ -69,7 +69,7 @@ go build -o bin/guard .
 ```
 
 `guard init` は `.guard/policies/`（空の場合のみスターターポリシーを投入）と
-`.guard/logs/` を用意し、`.claude/settings.json` に追加すべき hook スニペットを
+`.guard/logs/check/`・`.guard/logs/record/` を用意し、`.claude/settings.json` に追加すべき hook スニペットを
 表示する。フルの設定方法は [`../hooks-setup.md`](../hooks-setup.md)（英語）/
 [`hooks-setup.md`](hooks-setup.md)（日本語）を参照。
 
@@ -96,7 +96,8 @@ guard init
 - `.guard/policies/` が空（ポリシーが1つも無い）場合のみ、このCLIに同梱された
   スターターポリシー（`git`/`rm`/`curl` 向けの5ファイル、`go:embed` でバイナリに
   埋め込み済み）を書き込む。既にポリシーがある場合は**一切上書きしない**
-- `.guard/logs/`（ログの出力先ディレクトリ）も作成する
+- `.guard/logs/check/`・`.guard/logs/record/`（ログの出力先ディレクトリ。それぞれ
+  UTC日付ごとに `YYYY-MM-DD.jsonl` が1つ作られる）も作成する
 - **`.guard/config.yaml`（このCLI自身のプロジェクト設定、Bashポリシーとは別物）も
   用意する**。今のところ設定項目は `guard report --format duckdb` を使うかどうかと、
   使う場合のデータベースファイルの場所のみ:
@@ -110,7 +111,7 @@ guard init
     そのまま変更しない -- `guard init` を再実行しても聞き直されない
 - `.claude/settings.json` には**自動で書き込まない**（既存設定を壊すリスクを避けるため）。
   追記すべき hook JSON スニペットを標準出力に表示するだけ
-- `-rules`/`-log`/`-config` の作成先解決ルールは `guard check`/`guard lint`/
+- `-rules`/`-log`/`-record-log`/`-config` の作成先解決ルールは `guard check`/`guard lint`/
   `guard report` と共通（後述の[設定](#設定)参照）
 
 ### `guard check`
@@ -130,7 +131,8 @@ echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | guard check
   `allow`/`deny`/`ask`、`permissionDecisionReason` に理由と次アクション）を出力し、常に exit 0。
   `tool_name` が `Bash` 以外の場合は `{}` を返し何もしない（スコープ外）。
 
-判定結果は `.guard/logs/check.jsonl`（JSON Lines、1行1判定で追記のみ）に記録される。
+判定結果は `.guard/logs/check/YYYY-MM-DD.jsonl`（JSON Lines、1行1判定で追記のみ、
+UTC日付ごとに1ファイル）に記録される。
 
 `guard check` を `PreToolUse` hook として登録することで、実際に効果を持つように
 なる。詳細は [`../hooks-setup.md`](../hooks-setup.md) を参照。
@@ -139,8 +141,8 @@ echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | guard check
 
 Claude Code の **PostToolUse** hook payload を stdin から受け取り、Bash コマンドが
 実際に何を行ったか（コマンド・生の`stdout`/`stderr`（要約せずそのまま）・中断されたか）
-を `.guard/logs/record.jsonl` に追記する。CLIモードは無く、hookとして使うことのみを
-想定している。
+を `.guard/logs/record/YYYY-MM-DD.jsonl`（UTC日付ごとに1ファイル）に追記する。
+CLIモードは無く、hookとして使うことのみを想定している。
 
 ```bash
 echo '{"tool_name":"Bash","tool_input":{"command":"echo hi"},"tool_response":{"stdout":"hi\n"}}' | guard record
@@ -169,7 +171,7 @@ exit code は `0=エラー無し`（warningのみなら0のまま出力はされ
 
 ### `guard report`
 
-`.guard/logs/check.jsonl` と `.guard/logs/record.jsonl` を集計してサマリーを
+`.guard/logs/check/` と `.guard/logs/record/` 配下の全ファイルを集計してサマリーを
 出力する。action/mode別件数、tool別の内訳、DENY/CONFIRMが多い `tool`+subcommand
 の組み合わせ、`options.customCheck` の実行/タイムアウト/override件数、日次
 タイムライン、record側の中断件数などを含む。
@@ -189,14 +191,15 @@ guard report --format duckdb                 # guard initで設定したDBパス
 - `-format duckdb` を指定する場合は、PATH上の `duckdb` CLI（例: `brew install
   duckdb`）に加えてデータベースのパスが必要 -- `-out` が指定されていればそれを、
   無ければ `.guard/config.yaml`（`guard init` が用意する。後述）の
-  `duckdb.path` を使う。現在のJSONLの内容から、そのデータベースファイルに
-  `checks`/`records` テーブルを（差分ではなく）毎回フルリロードで作り直し、
-  DuckDB自身がレンダリングした月別×action別の集計結果を表示する。生成された
-  `.duckdb` ファイルはそのまま残るので、以降は自分で自由にSQLを投げられる
-  （`duckdb <path>`）-- guardが唯一のクエリ手段になろうとはしない。
+  `duckdb.path` を使う。各ディレクトリ配下の全 `*.jsonl` 日付ファイルの内容から、
+  そのデータベースファイルに `checks`/`records` テーブルを（差分ではなく）
+  毎回フルリロードで作り直し、DuckDB自身がレンダリングした月別×action別の
+  集計結果を表示する。生成された `.duckdb` ファイルはそのまま残るので、
+  以降は自分で自由にSQLを投げられる（`duckdb <path>`）-- guardが唯一の
+  クエリ手段になろうとはしない。
 - `-log`/`-record-log`/`-config` の解決順は他コマンドと同じ（`-flag` > 環境変数 >
   デフォルト、[設定](#設定)参照）。
-- どちらのログも事前に存在しなくてよい -- 無い/空の場合はそのことを示す
+- どちらのログディレクトリも事前に存在しなくてよい -- 無い/空の場合はそのことを示す
   レポートを出力するだけでエラーにはしない（未知の `-format`、`-format duckdb`
   で `-out` も設定済みパスも無い場合、`duckdb` CLIが無い場合などの
   usage/runtimeエラー以外はexit code常に`0`）。
@@ -211,13 +214,23 @@ guard report --format duckdb                 # guard initで設定したDBパス
 | 環境変数 | 対象コマンド | 対象フラグ | デフォルト |
 |---|---|---|---|
 | `GUARD_POLICIES_DIR` | `init`/`check`/`lint` | `-rules` | `.guard/policies` |
-| `GUARD_LOG_PATH` | `init`/`check`/`report` | `-log` | `.guard/logs/check.jsonl`（`init`はこのパスの親ディレクトリを作成） |
-| `GUARD_RECORD_LOG_PATH` | `record`/`report` | `-log`（`record`）/ `-record-log`（`report`） | `.guard/logs/record.jsonl` |
+| `GUARD_LOG_PATH` | `init`/`check`/`report` | `-log` | `.guard/logs/check`（UTC日付ごとに `YYYY-MM-DD.jsonl` を1つ；`init`がこのディレクトリを作成） |
+| `GUARD_RECORD_LOG_PATH` | `init`/`record`/`report` | `-log`（`record`）/ `-record-log`（`init`、`report`） | `.guard/logs/record`（UTC日付ごとに `YYYY-MM-DD.jsonl` を1つ） |
 | `GUARD_CONFIG_PATH` | `init`/`report` | `-config` | `.guard/config.yaml`（`init`が書き込み、`report`は読むだけ） |
 
 ```bash
 GUARD_POLICIES_DIR=./some/other/dir guard lint
 ```
+
+> **破壊的変更**: `GUARD_LOG_PATH`/`GUARD_RECORD_LOG_PATH`（および
+> `-log`/`-record-log`）は以前、単一の `.jsonl` **ファイル**
+> （`.guard/logs/check.jsonl`）を指していましたが、現在はUTC日付ごとに
+> `YYYY-MM-DD.jsonl` を1つ持つ**ディレクトリ**を指すようになりました。
+> どちらかが旧ファイルパスに設定されている場合は、ディレクトリパス
+> （例: `.guard/logs/check`）に更新してください -- 旧ファイルパスのままだと
+> `guard check`/`guard record` はログ書き込みがサイレントに止まり、
+> `guard init` は完全に失敗します（既存ファイルに対する `mkdir` は必ず
+> 失敗するため）。
 
 ## ポリシーの書き方
 
@@ -288,7 +301,7 @@ spec:
 - `to.label` は読み手・レビュアー向けの自由記述の任意フィールド（例:
   `write`、`destructive`、`network`、あるいは好きな文字列）。**マッチングには
   一切関与しない** —— マッチングは `functions`/`args` だけで決まる。
-  チェックログ（`.guard/logs/check.jsonl` の `commands[].label`）に記録され、
+  チェックログ（`.guard/logs/check/*.jsonl` の `commands[].label`）に記録され、
   可読性のために使われる。
 
 ### フラグ単位のマッチ（`to.args.anyOf`）
@@ -366,12 +379,12 @@ spec:
 - コマンド置換（`$(...)`）の中の呼び出しも AST walk で評価対象になるが、リテラルでない
   引数（変数展開など）は元のシェル構文がそのまま文字列化されるため、`functions` 一致の
   対象にはならずその呼び出しは catch-all/デフォルトにフォールバックする。
-- `guard report` には日付範囲やtool/actionでの絞り込みが無く、`check.jsonl`と
-  `record.jsonl`のエントリも結合しない（Claude Codeの`PreToolUse`ペイロードには
+- `guard report` には日付範囲やtool/actionでの絞り込みが無く、checkログと
+  recordログのエントリも結合しない（Claude Codeの`PreToolUse`ペイロードには
   `tool_use_id`が無く、確実に結合できるキーが無いため）-- 各ログは独立に集計する。
   `-format duckdb`で作られる`checks`/`records`テーブルも同様で、両者を
   `JOIN`できる共通キーは無い。
-- `check.jsonl`の`commands[]`にある`function`フィールド（`guard report`の
+- checkログの`commands[]`にある`function`フィールド（`guard report`の
   tool+function集計に使う）は、このフィールドが追加された後に記録された
   エントリにのみ存在する。それより古いログ行には単に存在しない。
 

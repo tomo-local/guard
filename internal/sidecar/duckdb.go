@@ -24,7 +24,7 @@ type SyncDuckDBResult struct {
 	MonthlySummary string // the database engine's own rendered table; empty when ChecksLoaded is false
 }
 
-// DuckDBStore persists check.jsonl/record.jsonl into a real SQL
+// DuckDBStore persists the check/record log directories into a real SQL
 // database file (a full reload on every call, not an incremental sync)
 // and reports what it did. It lives in this package, not internal/report,
 // because sidecar is where this CLI's data gets persisted -- JSONL via
@@ -32,7 +32,7 @@ type SyncDuckDBResult struct {
 // internal/report's job is only to turn persisted data into a rendered
 // report, not to own how or where that data is stored.
 type DuckDBStore interface {
-	Sync(checkLogPath, recordLogPath, dbPath string) (SyncDuckDBResult, error)
+	Sync(checkLogDir, recordLogDir, dbPath string) (SyncDuckDBResult, error)
 }
 
 // DuckDBCLIStore is the DuckDBStore backed by shelling out to the
@@ -44,14 +44,14 @@ type DuckDBStore interface {
 // internal/procexec).
 type DuckDBCLIStore struct{}
 
-// Sync (re)builds dbPath's `checks`/`records` tables from
-// checkLogPath/recordLogPath. JSON parsing itself is left entirely to
-// DuckDB's read_json_auto, which infers the schema (including the
-// nested commands[] struct array) straight from the JSONL files -- Go
-// never touches the JSON here, so this schema can't drift from
-// CheckLogEntry/RecordLogEntry without also being visible the next time
-// someone runs this.
-func (DuckDBCLIStore) Sync(checkLogPath, recordLogPath, dbPath string) (SyncDuckDBResult, error) {
+// Sync (re)builds dbPath's `checks`/`records` tables from every *.jsonl
+// file under checkLogDir/recordLogDir. JSON parsing itself is left
+// entirely to DuckDB's read_json_auto, which accepts a glob and infers
+// the schema (including the nested commands[] struct array) straight
+// from the JSONL files -- Go never touches the JSON here, so this schema
+// can't drift from CheckLogEntry/RecordLogEntry without also being
+// visible the next time someone runs this.
+func (DuckDBCLIStore) Sync(checkLogDir, recordLogDir, dbPath string) (SyncDuckDBResult, error) {
 	if _, err := exec.LookPath("duckdb"); err != nil {
 		return SyncDuckDBResult{}, fmt.Errorf("duckdb CLI not found on PATH -- install it first (e.g. `brew install duckdb`; see https://duckdb.org/docs/installation/)")
 	}
@@ -68,18 +68,18 @@ func (DuckDBCLIStore) Sync(checkLogPath, recordLogPath, dbPath string) (SyncDuck
 	var result SyncDuckDBResult
 	var script strings.Builder
 
-	// read_json_auto errors out on a missing file and infers a useless
-	// single-JSON-column schema on an empty one, so a table is only
-	// created when there's real data behind it -- a log with nothing in
-	// it yet is a normal state (see internal/report/analyze.go's same
-	// graceful-degradation stance), not an error.
-	result.ChecksLoaded = nonEmptyFile(checkLogPath)
+	// read_json_auto errors out when its glob matches nothing, so a table
+	// is only created when there's real data behind it -- a log
+	// directory with no files in it yet is a normal state (see
+	// internal/report/analyze.go's same graceful-degradation stance),
+	// not an error.
+	result.ChecksLoaded = hasLogFiles(checkLogDir)
 	if result.ChecksLoaded {
-		fmt.Fprintf(&script, "CREATE OR REPLACE TABLE checks AS SELECT * FROM read_json_auto(%s);\n", sqlQuote(checkLogPath))
+		fmt.Fprintf(&script, "CREATE OR REPLACE TABLE checks AS SELECT * FROM read_json_auto(%s);\n", sqlQuote(jsonlGlob(checkLogDir)))
 	}
-	result.RecordsLoaded = nonEmptyFile(recordLogPath)
+	result.RecordsLoaded = hasLogFiles(recordLogDir)
 	if result.RecordsLoaded {
-		fmt.Fprintf(&script, "CREATE OR REPLACE TABLE records AS SELECT * FROM read_json_auto(%s);\n", sqlQuote(recordLogPath))
+		fmt.Fprintf(&script, "CREATE OR REPLACE TABLE records AS SELECT * FROM read_json_auto(%s);\n", sqlQuote(jsonlGlob(recordLogDir)))
 	}
 
 	if result.ChecksLoaded {
@@ -117,6 +117,20 @@ ORDER BY month, action;`)
 func nonEmptyFile(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.Size() > 0
+}
+
+// hasLogFiles reports whether dir exists and contains at least one
+// *.jsonl file -- the directory-based equivalent of nonEmptyFile, used
+// to decide whether read_json_auto's glob has anything to load.
+func hasLogFiles(dir string) bool {
+	matches, err := filepath.Glob(jsonlGlob(dir))
+	return err == nil && len(matches) > 0
+}
+
+// jsonlGlob is the glob pattern matching every per-day log file directly
+// under dir (see internal/sidecar's YYYY-MM-DD.jsonl naming).
+func jsonlGlob(dir string) string {
+	return filepath.Join(dir, "*.jsonl")
 }
 
 func sqlQuote(s string) string {

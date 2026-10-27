@@ -51,7 +51,7 @@ func TestRenderMarkdown_EmptyReportSaysSo(t *testing.T) {
 	if err := RenderMarkdown(&buf, Report{}); err != nil {
 		t.Fatalf("RenderMarkdown: %v", err)
 	}
-	if !strings.Contains(buf.String(), "No check.jsonl entries") {
+	if !strings.Contains(buf.String(), "No check log entries") {
 		t.Errorf("expected an empty-report message, got:\n%s", buf.String())
 	}
 }

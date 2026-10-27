@@ -31,12 +31,12 @@ func defaultPoliciesDir() string {
 	return envOrDefault(envPoliciesDir, ".guard/policies")
 }
 
-func defaultLogPath() string {
-	return envOrDefault(envLogPath, ".guard/logs/check.jsonl")
+func defaultLogDir() string {
+	return envOrDefault(envLogPath, ".guard/logs/check")
 }
 
-func defaultRecordLogPath() string {
-	return envOrDefault(envRecordLogPath, ".guard/logs/record.jsonl")
+func defaultRecordLogDir() string {
+	return envOrDefault(envRecordLogPath, ".guard/logs/record")
 }
 
 func defaultConfigPath() string {
