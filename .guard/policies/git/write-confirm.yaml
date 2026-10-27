@@ -15,11 +15,13 @@ spec:
         reason: "{cmd} is a write operation."
         next: "Confirm with the user before proceeding."
 
+    # push -f/--force is owned by push-force-deny.yaml; stepping aside keeps
+    # one command decided by exactly one policy.
     - to:
         label: write
         functions: [push]
         args:
-          anyOf: ["-f", "--force"]
+          noneOf: ["-f", "--force"]
       message:
-        reason: "{cmd} force-pushes and can overwrite remote history."
-        next: "Suggest a non-destructive alternative, or ask the user to run it themselves."
+        reason: "{cmd} is a write operation."
+        next: "Confirm with the user before proceeding."
