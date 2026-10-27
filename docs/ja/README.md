@@ -131,6 +131,10 @@ echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | guard check
   `allow`/`deny`/`ask`、`permissionDecisionReason` に理由と次アクション）を出力し、常に exit 0。
   `tool_name` が `Bash` 以外の場合は `{}` を返し何もしない（スコープ外）。
 
+コマンドはまずツールごとのポリシーに照らされる。どのポリシーもマッチしなかった場合にだけ、
+プロジェクトの manifest（`.guard/manifest.yaml`、[GuardManifest](manifest-schema.md)を参照）が、
+コマンドが触るファイルパスで判定する（たとえば `/cmd` 配下は拒否）。
+
 判定結果は `.guard/logs/check/YYYY-MM-DD.jsonl`（JSON Lines、1行1判定で追記のみ、
 UTC日付ごとに1ファイル）に記録される。
 
@@ -220,6 +224,7 @@ guard report --format duckdb                 # guard initで設定したDBパス
 | `GUARD_LOG_PATH` | `init`/`check`/`report` | `-log` | `.guard/logs/check`（UTC日付ごとに `YYYY-MM-DD.jsonl` を1つ；`init`がこのディレクトリを作成） |
 | `GUARD_RECORD_LOG_PATH` | `init`/`record`/`report` | `-log`（`record`）/ `-record-log`（`init`、`report`） | `.guard/logs/record`（UTC日付ごとに `YYYY-MM-DD.jsonl` を1つ） |
 | `GUARD_CONFIG_PATH` | `init`/`report` | `-config` | `.guard/config.yaml`（`init`が書き込み、`report`は読むだけ） |
+| `GUARD_MANIFEST_PATH` | `check`/`lint` | `-manifest` | `.guard/manifest.yaml`（任意。[GuardManifest](manifest-schema.md)を参照） |
 
 ```bash
 GUARD_POLICIES_DIR=./some/other/dir guard lint
@@ -384,6 +389,8 @@ spec:
 
 ## 既知の制限（v1）
 
+- manifest のパスマッチはコマンド内の `cd` を追跡せず、パスに見える引数は何でもパスとして扱う。
+  [GuardManifest](manifest-schema.md#既知の制限)を参照。
 - 対象スコープは **Bash コマンドのみ**。
 - サブコマンド（`functions`）の判定は「先頭の `-` で始まらない最初の引数」というヒューリスティック。
   `git -C <path> push` のように値を取るフラグの直後の引数を誤って function とみなす場合がある。

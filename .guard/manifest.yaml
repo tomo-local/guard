@@ -1,12 +1,13 @@
 apiVersion: ai-guard/v1
-kind: GuardConfig
+kind: GuardManifest
 metadata:
   name: default-rules
 spec:
+  # Fallback behind the per-tool policies in .guard/policies/: it only decides
+  # commands those policies have no opinion on, by the paths the command touches.
   commandGate:
     target:
-      module: permission
-      action: DENY
+      action: DENY            # used by rules that don't set their own action
     rules:
       - to:
           label: cmd-dir
@@ -21,12 +22,11 @@ spec:
           paths:
             anyOf:
               - "/src/*"
-        options:
-          confirm:
-            enabled: true
-            message:
-              reason: "{cmd} is a write operation under /src."
-              next: "Confirm with the user before proceeding."
+        action: CONFIRM
+        message:
+          reason: "{cmd} is a write operation under /src."
+          next: "Confirm with the user before proceeding."
+  # Read but not enforced yet.
   repositoryGate:
     repose:
       - name: tomo-local/aaaaa

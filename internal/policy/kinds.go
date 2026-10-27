@@ -15,7 +15,8 @@ type Kind struct {
 
 // Kinds maps a manifest's `kind:` value to its Kind.
 var Kinds = map[string]Kind{
-	KindCommandGate: {New: newCommandGate, LintSet: lintCommandGateSet},
+	KindCommandGate:   {New: newCommandGate, LintSet: lintCommandGateSet},
+	KindGuardManifest: {New: newGuardManifest, LintSet: lintManifestSet},
 }
 
 // KindNames returns the registered kind names in sorted order.

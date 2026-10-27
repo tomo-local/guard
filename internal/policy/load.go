@@ -96,6 +96,16 @@ func LoadFile(path string, deps Deps) (Policy, error) {
 	return pol, nil
 }
 
+// LoadFileForLint is LoadFile for `guard lint`: a file that can't be read
+// or parsed becomes a placeholder that reports the failure through Lint.
+func LoadFileForLint(path string, deps Deps) Policy {
+	pol, err := LoadFile(path, deps)
+	if err != nil {
+		return &brokenPolicy{source: path, err: err}
+	}
+	return pol
+}
+
 // unknownKindPolicy stands in for a manifest whose kind isn't registered.
 // It implements Policy but not CommandEvaluator, so nothing evaluates it.
 type unknownKindPolicy struct {

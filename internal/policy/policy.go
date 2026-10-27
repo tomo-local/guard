@@ -88,6 +88,12 @@ type CustomCheckRunner interface {
 // Deps are the outside capabilities injected into policies when they are
 // built. A nil Runner means customCheck never runs, so a rule falls back
 // to its own action.
+//
+// Root and Cwd are plain values the composition root resolves once: the
+// project root (the directory holding .guard/) and the directory commands
+// run in. Kinds that match file paths use them to normalize arguments.
 type Deps struct {
 	Runner CustomCheckRunner
+	Root   string
+	Cwd    string
 }

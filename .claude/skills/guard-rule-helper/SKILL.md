@@ -106,6 +106,13 @@ Key rules to follow:
 - Directory convention: `.guard/policies/<tool>/<short-action-or-qualifier>.yaml`
   (e.g. `git/allow.yaml`, `rm/deny.yaml`, `git/push-force-deny.yaml`).
 
+## The project manifest (`.guard/manifest.yaml`)
+
+Path-based rules ("nothing may touch `/cmd`") don't go in a policy file;
+they live in the single `GuardManifest` at `.guard/manifest.yaml`. It is
+only a fallback: the per-tool policies are checked first, and the manifest
+decides only commands none of them matched. See `docs/manifest-schema.md`.
+
 ## After writing/editing
 
 1. Run `guard lint` (or `go run . lint` from a source checkout without a

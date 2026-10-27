@@ -21,6 +21,7 @@ const checkUsage = `Usage:
 Options:
   -rules string   policy directory to load (default ".guard/policies", env GUARD_POLICIES_DIR)
   -log string     check decision log directory, one file per UTC day (default ".guard/logs/check", env GUARD_LOG_PATH)
+  -manifest string  project manifest, used when no policy matches (default ".guard/manifest.yaml", env GUARD_MANIFEST_PATH)
 
 Precedence for both: -flag > env var > built-in default.
 
@@ -36,12 +37,13 @@ func (c *Cmd) RunCheck(args []string) error {
 	fs.SetOutput(c.Stderr)
 	rulesDir := fs.String("rules", defaultPoliciesDir(), "policy directory to load (env GUARD_POLICIES_DIR)")
 	logDir := fs.String("log", defaultLogDir(), "check decision log directory (env GUARD_LOG_PATH)")
+	manifest := fs.String("manifest", defaultManifestPath(), "project manifest (env GUARD_MANIFEST_PATH)")
 	fs.Usage = func() { fmt.Fprint(c.Stderr, checkUsage) }
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	policies, loadErr := policy.LoadDir(*rulesDir, policy.Deps{Runner: procRunner{}})
+	policies, loadErr := loadPolicies(*rulesDir, *manifest, false)
 	evaluator := engine.NewEvaluator(policies)
 
 	if rest := fs.Args(); len(rest) > 0 {
