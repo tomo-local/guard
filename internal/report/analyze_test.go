@@ -10,11 +10,17 @@ import (
 	"ai-guard-tracker/internal/sidecar"
 )
 
-func writeJSONL(t *testing.T, path string, lines []any) {
+// writeJSONL writes lines as one dated check/record log file under dir
+// (dir/YYYY-MM-DD.jsonl, UTC), matching the layout internal/sidecar
+// produces. All lines land in one file regardless of their own
+// timestamps -- callers that need entries split across multiple days
+// pass distinct dates and call this once per date.
+func writeJSONL(t *testing.T, dir string, date time.Time, lines []any) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
+	path := filepath.Join(dir, date.UTC().Format("2006-01-02")+".jsonl")
 	f, err := os.Create(path)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -31,15 +37,15 @@ func writeJSONL(t *testing.T, path string, lines []any) {
 	}
 }
 
-func TestAnalyze_MissingFiles(t *testing.T) {
+func TestAnalyze_MissingDirs(t *testing.T) {
 	dir := t.TempDir()
-	r := Analyze(filepath.Join(dir, "check.jsonl"), filepath.Join(dir, "record.jsonl"))
+	r := Analyze(filepath.Join(dir, "check"), filepath.Join(dir, "record"))
 
 	if r.CheckLogErr == nil {
-		t.Errorf("expected CheckLogErr for a missing file")
+		t.Errorf("expected CheckLogErr for a missing directory")
 	}
 	if r.RecordLogErr == nil {
-		t.Errorf("expected RecordLogErr for a missing file")
+		t.Errorf("expected RecordLogErr for a missing directory")
 	}
 	if r.CheckEntries != 0 || r.RecordEntries != 0 {
 		t.Errorf("expected zero entries, got check=%d record=%d", r.CheckEntries, r.RecordEntries)
@@ -49,14 +55,35 @@ func TestAnalyze_MissingFiles(t *testing.T) {
 	}
 }
 
+func TestAnalyze_EmptyDirIsNotAnError(t *testing.T) {
+	dir := t.TempDir()
+	checkDir := filepath.Join(dir, "check")
+	recordDir := filepath.Join(dir, "record")
+	if err := os.MkdirAll(checkDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(recordDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := Analyze(checkDir, recordDir)
+
+	if r.CheckLogErr != nil || r.RecordLogErr != nil {
+		t.Fatalf("an existing-but-empty dir must not be an error, got CheckLogErr=%v RecordLogErr=%v", r.CheckLogErr, r.RecordLogErr)
+	}
+	if r.CheckEntries != 0 || r.RecordEntries != 0 {
+		t.Errorf("expected zero entries, got check=%d record=%d", r.CheckEntries, r.RecordEntries)
+	}
+}
+
 func TestAnalyze_ChecksAggregateByActionModeAndTool(t *testing.T) {
 	dir := t.TempDir()
-	checkPath := filepath.Join(dir, "check.jsonl")
+	checkDir := filepath.Join(dir, "check")
 
 	day1 := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
 	day2 := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
 
-	entries := []any{
+	writeJSONL(t, checkDir, day1, []any{
 		sidecar.CheckLogEntry{
 			Timestamp: day1, Mode: "cli", Action: "ALLOW",
 			Commands: []sidecar.CommandLog{{Tool: "git", Action: "ALLOW", Function: "log"}},
@@ -65,6 +92,8 @@ func TestAnalyze_ChecksAggregateByActionModeAndTool(t *testing.T) {
 			Timestamp: day1, Mode: "hook", Action: "DENY", Default: false,
 			Commands: []sidecar.CommandLog{{Tool: "git", Action: "DENY", Function: "push"}},
 		},
+	})
+	writeJSONL(t, checkDir, day2, []any{
 		sidecar.CheckLogEntry{
 			Timestamp: day2, Mode: "hook", Action: "CONFIRM", UsedFallbackParse: true,
 			Commands: []sidecar.CommandLog{{Tool: "git", Action: "CONFIRM", Function: "push"}},
@@ -73,10 +102,9 @@ func TestAnalyze_ChecksAggregateByActionModeAndTool(t *testing.T) {
 			Timestamp: day2, Mode: "hook", Action: "CONFIRM", Default: true,
 			Commands: []sidecar.CommandLog{{Tool: "curl", Action: "CONFIRM", Function: ""}},
 		},
-	}
-	writeJSONL(t, checkPath, entries)
+	})
 
-	r := Analyze(checkPath, filepath.Join(dir, "record.jsonl"))
+	r := Analyze(checkDir, filepath.Join(dir, "record"))
 
 	if r.CheckLogErr != nil {
 		t.Fatalf("unexpected CheckLogErr: %v", r.CheckLogErr)
@@ -121,16 +149,16 @@ func TestAnalyze_ChecksAggregateByActionModeAndTool(t *testing.T) {
 
 func TestAnalyze_CustomCheckAggregation(t *testing.T) {
 	dir := t.TempDir()
-	checkPath := filepath.Join(dir, "check.jsonl")
+	checkDir := filepath.Join(dir, "check")
 
 	entries := []any{
 		sidecar.CheckLogEntry{Action: "ALLOW", CustomCheck: &sidecar.CustomCheckLog{ExitCode: 0, Override: "ALLOW"}},
 		sidecar.CheckLogEntry{Action: "DENY", CustomCheck: &sidecar.CustomCheckLog{ExitCode: 1, TimedOut: true}},
 		sidecar.CheckLogEntry{Action: "CONFIRM"}, // no customCheck at all
 	}
-	writeJSONL(t, checkPath, entries)
+	writeJSONL(t, checkDir, time.Now(), entries)
 
-	r := Analyze(checkPath, filepath.Join(dir, "record.jsonl"))
+	r := Analyze(checkDir, filepath.Join(dir, "record"))
 
 	if r.CustomCheckRuns != 2 {
 		t.Fatalf("CustomCheckRuns = %d, want 2", r.CustomCheckRuns)
@@ -145,18 +173,18 @@ func TestAnalyze_CustomCheckAggregation(t *testing.T) {
 
 func TestAnalyze_MalformedLineIsSkippedNotFatal(t *testing.T) {
 	dir := t.TempDir()
-	checkPath := filepath.Join(dir, "check.jsonl")
+	checkDir := filepath.Join(dir, "check")
 
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(checkDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	good, _ := json.Marshal(sidecar.CheckLogEntry{Action: "ALLOW"})
 	content := string(good) + "\n" + "not json at all\n" + string(good) + "\n"
-	if err := os.WriteFile(checkPath, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(checkDir, "2026-10-27.jsonl"), []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	r := Analyze(checkPath, filepath.Join(dir, "record.jsonl"))
+	r := Analyze(checkDir, filepath.Join(dir, "record"))
 
 	if r.CheckLogErr != nil {
 		t.Fatalf("a malformed line should not surface as CheckLogErr: %v", r.CheckLogErr)
@@ -174,15 +202,15 @@ func TestAnalyze_MalformedLineIsSkippedNotFatal(t *testing.T) {
 
 func TestAnalyze_RecordInterrupted(t *testing.T) {
 	dir := t.TempDir()
-	recordPath := filepath.Join(dir, "record.jsonl")
+	recordDir := filepath.Join(dir, "record")
 
 	entries := []any{
 		sidecar.RecordLogEntry{Command: "sleep 100", Interrupted: true},
 		sidecar.RecordLogEntry{Command: "echo hi", Interrupted: false},
 	}
-	writeJSONL(t, recordPath, entries)
+	writeJSONL(t, recordDir, time.Now(), entries)
 
-	r := Analyze(filepath.Join(dir, "check.jsonl"), recordPath)
+	r := Analyze(filepath.Join(dir, "check"), recordDir)
 
 	if r.RecordEntries != 2 {
 		t.Fatalf("RecordEntries = %d, want 2", r.RecordEntries)
@@ -194,7 +222,7 @@ func TestAnalyze_RecordInterrupted(t *testing.T) {
 
 func TestAnalyze_TopDenyConfirmIsCappedAndSorted(t *testing.T) {
 	dir := t.TempDir()
-	checkPath := filepath.Join(dir, "check.jsonl")
+	checkDir := filepath.Join(dir, "check")
 
 	// 6 distinct tool+function combos, each with a different deny+confirm
 	// total, to exercise both the topN=5 cap and the descending sort.
@@ -209,9 +237,9 @@ func TestAnalyze_TopDenyConfirmIsCappedAndSorted(t *testing.T) {
 			})
 		}
 	}
-	writeJSONL(t, checkPath, entries)
+	writeJSONL(t, checkDir, time.Now(), entries)
 
-	r := Analyze(checkPath, filepath.Join(dir, "record.jsonl"))
+	r := Analyze(checkDir, filepath.Join(dir, "record"))
 
 	if len(r.TopDenyConfirm) != topN {
 		t.Fatalf("TopDenyConfirm length = %d, want %d", len(r.TopDenyConfirm), topN)

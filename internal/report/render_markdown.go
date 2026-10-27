@@ -11,7 +11,7 @@ import (
 // (e.g. pasted into a PR description or a chat message). Section order
 // mirrors RenderHTML: overview, action/mode breakdown, default/fallback
 // rates, per-tool breakdown, top deny/confirm tool+function, customCheck
-// aggregation, daily timeline, then record.jsonl's execution facts.
+// aggregation, daily timeline, then the record log's execution facts.
 func RenderMarkdown(w io.Writer, r Report) error {
 	fmt.Fprintln(w, "# guard report")
 	fmt.Fprintf(w, "\n_generated %s_\n", r.GeneratedAt.Format("2006-01-02 15:04:05 UTC"))
@@ -19,11 +19,11 @@ func RenderMarkdown(w io.Writer, r Report) error {
 	fmt.Fprintln(w, "\n## Overview")
 	fmt.Fprintln(w, "\n| log | entries | skipped lines | status |")
 	fmt.Fprintln(w, "|---|---|---|---|")
-	writeLogStatusRow(w, "check.jsonl", r.CheckEntries, r.CheckSkippedLines, r.CheckLogErr)
-	writeLogStatusRow(w, "record.jsonl", r.RecordEntries, r.RecordSkippedLines, r.RecordLogErr)
+	writeLogStatusRow(w, "check log", r.CheckEntries, r.CheckSkippedLines, r.CheckLogErr)
+	writeLogStatusRow(w, "record log", r.RecordEntries, r.RecordSkippedLines, r.RecordLogErr)
 
 	if r.CheckEntries == 0 {
-		fmt.Fprintln(w, "\nNo check.jsonl entries to summarize yet.")
+		fmt.Fprintln(w, "\nNo check log entries to summarize yet.")
 		return nil
 	}
 
@@ -103,7 +103,7 @@ func RenderMarkdown(w io.Writer, r Report) error {
 		}
 	}
 
-	fmt.Fprintln(w, "\n## record.jsonl (actual execution)")
+	fmt.Fprintln(w, "\n## record log (actual execution)")
 	fmt.Fprintf(w, "\nentries: %d, interrupted: %d\n", r.RecordEntries, r.RecordInterrupted)
 
 	return nil

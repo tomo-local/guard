@@ -20,7 +20,7 @@ const checkUsage = `Usage:
 
 Options:
   -rules string   policy directory to load (default ".guard/policies", env GUARD_POLICIES_DIR)
-  -log string     check decision log path (default ".guard/logs/check.jsonl", env GUARD_LOG_PATH)
+  -log string     check decision log directory, one file per UTC day (default ".guard/logs/check", env GUARD_LOG_PATH)
 
 Precedence for both: -flag > env var > built-in default.
 
@@ -35,7 +35,7 @@ func (c *Cmd) RunCheck(args []string) error {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(c.Stderr)
 	rulesDir := fs.String("rules", defaultPoliciesDir(), "policy directory to load (env GUARD_POLICIES_DIR)")
-	logPath := fs.String("log", defaultLogPath(), "check decision log path (env GUARD_LOG_PATH)")
+	logDir := fs.String("log", defaultLogDir(), "check decision log directory (env GUARD_LOG_PATH)")
 	fs.Usage = func() { fmt.Fprint(c.Stderr, checkUsage) }
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -45,19 +45,19 @@ func (c *Cmd) RunCheck(args []string) error {
 	evaluator := engine.NewEvaluator(policies)
 
 	if rest := fs.Args(); len(rest) > 0 {
-		return c.runCheckCLI(evaluator, strings.Join(rest, " "), loadErr, *logPath)
+		return c.runCheckCLI(evaluator, strings.Join(rest, " "), loadErr, *logDir)
 	}
-	return c.runCheckHook(evaluator, loadErr, *logPath)
+	return c.runCheckHook(evaluator, loadErr, *logDir)
 }
 
-func (c *Cmd) runCheckCLI(evaluator *engine.Evaluator, raw string, loadErr error, logPath string) error {
+func (c *Cmd) runCheckCLI(evaluator *engine.Evaluator, raw string, loadErr error, logDir string) error {
 	if loadErr != nil {
 		fmt.Fprintf(c.Stderr, "warning: failed to load policies: %v (defaulting to CONFIRM)\n", loadErr)
 	}
 
 	final, perCmd := evaluator.EvaluateAll(raw)
 
-	if err := sidecar.AppendCheckLog(logPath, buildLogEntry("cli", "", raw, final, perCmd)); err != nil {
+	if err := sidecar.AppendCheckLog(logDir, buildLogEntry("cli", "", raw, final, perCmd)); err != nil {
 		fmt.Fprintf(c.Stderr, "warning: failed to write check log: %v\n", err)
 	}
 
@@ -79,7 +79,7 @@ func (c *Cmd) runCheckCLI(evaluator *engine.Evaluator, raw string, loadErr error
 	}
 }
 
-func (c *Cmd) runCheckHook(evaluator *engine.Evaluator, loadErr error, logPath string) error {
+func (c *Cmd) runCheckHook(evaluator *engine.Evaluator, loadErr error, logDir string) error {
 	data, err := io.ReadAll(c.Stdin)
 	if err != nil {
 		return fmt.Errorf("read stdin: %w", err)
@@ -114,7 +114,7 @@ func (c *Cmd) runCheckHook(evaluator *engine.Evaluator, loadErr error, logPath s
 		final.Next = "ポリシー定義（.guard/policies/）を確認してください。"
 	}
 
-	if err := sidecar.AppendCheckLog(logPath, buildLogEntry("hook", in.SessionID, bashInput.Command, final, perCmd)); err != nil {
+	if err := sidecar.AppendCheckLog(logDir, buildLogEntry("hook", in.SessionID, bashInput.Command, final, perCmd)); err != nil {
 		fmt.Fprintf(c.Stderr, "warning: failed to write check log: %v\n", err)
 	}
 

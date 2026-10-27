@@ -1,13 +1,15 @@
-// Package report aggregates ai-guard-tracker's .guard/logs/*.jsonl files
-// (check.jsonl + record.jsonl) into summary statistics for `guard report`.
-// It only reads and counts -- it never re-evaluates policies, so it has
-// no dependency on internal/policy or internal/engine.
+// Package report aggregates ai-guard-tracker's .guard/logs/check/*.jsonl
+// and .guard/logs/record/*.jsonl files (one per UTC day) into summary
+// statistics for `guard report`. It only reads and counts -- it never
+// re-evaluates policies, so it has no dependency on internal/policy or
+// internal/engine.
 package report
 
 import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -18,8 +20,8 @@ import (
 // in v1 -- see PLAN.md for the reasoning.
 const topN = 5
 
-// Report is the aggregated result of analyzing check.jsonl and
-// record.jsonl. A missing or unreadable log is not a fatal error: it is
+// Report is the aggregated result of analyzing the check and record log
+// directories. A missing or unreadable log is not a fatal error: it is
 // recorded in CheckLogErr/RecordLogErr and the rest of the report is
 // still produced from whatever could be read.
 type Report struct {
@@ -60,18 +62,19 @@ type ToolFunctionCount struct {
 	ConfirmCount int    `json:"confirm_count"`
 }
 
-// DailyCount is one day's worth of check.jsonl entries, broken down by
+// DailyCount is one day's worth of check log entries, broken down by
 // final decision action.
 type DailyCount struct {
 	Date   string         `json:"date"` // YYYY-MM-DD, UTC
 	Counts map[string]int `json:"counts"`
 }
 
-// Analyze reads checkLogPath and recordLogPath and builds a Report.
-// Neither file needs to exist; Analyze degrades gracefully rather than
-// returning an error, since a report should still be produced (even if
-// mostly empty) when a log hasn't been written to yet.
-func Analyze(checkLogPath, recordLogPath string) Report {
+// Analyze reads every *.jsonl file under checkLogDir and recordLogDir
+// and builds a Report. Neither directory needs to exist; Analyze
+// degrades gracefully rather than returning an error, since a report
+// should still be produced (even if mostly empty) when nothing has been
+// logged yet.
+func Analyze(checkLogDir, recordLogDir string) Report {
 	r := Report{
 		GeneratedAt:          time.Now().UTC(),
 		ActionCounts:         map[string]int{},
@@ -84,7 +87,7 @@ func Analyze(checkLogPath, recordLogPath string) Report {
 	daily := map[string]map[string]int{}
 
 	var checkTotalLines int
-	checkTotalLines, r.CheckLogErr = forEachLine(checkLogPath, func(line []byte) {
+	checkTotalLines, r.CheckLogErr = forEachLineInDir(checkLogDir, func(line []byte) {
 		var entry sidecar.CheckLogEntry
 		if err := json.Unmarshal(line, &entry); err != nil {
 			r.CheckSkippedLines++
@@ -149,7 +152,7 @@ func Analyze(checkLogPath, recordLogPath string) Report {
 	r.CheckEntries = checkTotalLines - r.CheckSkippedLines
 
 	var recordTotalLines int
-	recordTotalLines, r.RecordLogErr = forEachLine(recordLogPath, func(line []byte) {
+	recordTotalLines, r.RecordLogErr = forEachLineInDir(recordLogDir, func(line []byte) {
 		var entry sidecar.RecordLogEntry
 		if err := json.Unmarshal(line, &entry); err != nil {
 			r.RecordSkippedLines++
@@ -191,11 +194,43 @@ func Analyze(checkLogPath, recordLogPath string) Report {
 	return r
 }
 
+// forEachLineInDir reads every *.jsonl file directly under dir, in
+// filename order (which is also chronological order given the
+// YYYY-MM-DD.jsonl naming from internal/sidecar), and calls fn with each
+// non-empty line's raw bytes. It returns the total number of such lines
+// seen across all files (successfully parsed or not -- fn itself is
+// responsible for counting its own parse failures) and a non-nil error
+// only when dir itself couldn't be read (including "does not exist").
+// An existing-but-empty dir (e.g. right after `guard init`, before
+// anything has been logged yet) is not an error.
+func forEachLineInDir(dir string, fn func(line []byte)) (totalLines int, err error) {
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		return 0, readErr
+	}
+
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".jsonl" {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		n, err := forEachLine(filepath.Join(dir, name), fn)
+		totalLines += n
+		if err != nil {
+			return totalLines, err
+		}
+	}
+	return totalLines, nil
+}
+
 // forEachLine opens path and calls fn with each non-empty line's raw
-// bytes, returning the total number of such lines seen (successfully
-// parsed or not -- fn itself is responsible for counting its own parse
-// failures) and a non-nil error only when the file couldn't be opened at
-// all (including "does not exist").
+// bytes, returning the number of such lines seen (successfully parsed or
+// not -- fn itself is responsible for counting its own parse failures)
+// and a non-nil error only when the file couldn't be opened at all.
 func forEachLine(path string, fn func(line []byte)) (totalLines int, err error) {
 	f, openErr := os.Open(path)
 	if openErr != nil {

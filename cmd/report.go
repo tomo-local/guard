@@ -38,8 +38,8 @@ const reportUsage = `Usage:
   guard report [-log <path>] [-record-log <path>] [-format md|json|html|duckdb] [-out <path>]
 
 Options:
-  -log string         check decision log path (default ".guard/logs/check.jsonl", env GUARD_LOG_PATH)
-  -record-log string  record log path (default ".guard/logs/record.jsonl", env GUARD_RECORD_LOG_PATH)
+  -log string         check decision log directory, one file per UTC day (default ".guard/logs/check", env GUARD_LOG_PATH)
+  -record-log string  record log directory, one file per UTC day (default ".guard/logs/record", env GUARD_RECORD_LOG_PATH)
   -config string       project settings file path (default ".guard/config.yaml", env GUARD_CONFIG_PATH)
   -format string        "md", "json", "html" (default), or "duckdb"
   -out string            output file path. For md/json/html, printed to stdout when
@@ -47,7 +47,7 @@ Options:
                           init -duckdb" in -config when omitted (only if enabled there);
                           required otherwise.
 
--format duckdb loads check.jsonl/record.jsonl into a DuckDB database file
+-format duckdb loads every check/record log file into a DuckDB database file
 (full reload every run) and prints a month x action count summary. Requires
 the duckdb CLI on PATH (e.g. "brew install duckdb"); the database file is
 yours to open afterwards for ad-hoc SQL: duckdb <path>
@@ -55,7 +55,7 @@ yours to open afterwards for ad-hoc SQL: duckdb <path>
 Exit codes: 0=success (an empty or missing log is not an error), 1=usage/runtime error.
 `
 
-// RunReport aggregates .guard/logs/check.jsonl and record.jsonl into a
+// RunReport aggregates .guard/logs/check/*.jsonl and record/*.jsonl into a
 // summary, in one of four formats: a Markdown document, JSON, a
 // self-contained HTML page (default), or loaded into a DuckDB database
 // with a monthly summary printed. md/json/html print to stdout unless
@@ -64,8 +64,8 @@ Exit codes: 0=success (an empty or missing log is not an error), 1=usage/runtime
 func (c *Cmd) RunReport(args []string) error {
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
 	fs.SetOutput(c.Stderr)
-	logPath := fs.String("log", defaultLogPath(), "check decision log path (env GUARD_LOG_PATH)")
-	recordLogPath := fs.String("record-log", defaultRecordLogPath(), "record log path (env GUARD_RECORD_LOG_PATH)")
+	logDir := fs.String("log", defaultLogDir(), "check decision log directory (env GUARD_LOG_PATH)")
+	recordLogDir := fs.String("record-log", defaultRecordLogDir(), "record log directory (env GUARD_RECORD_LOG_PATH)")
 	configPath := fs.String("config", defaultConfigPath(), "project settings file path (env GUARD_CONFIG_PATH)")
 	format := fs.String("format", "html", `output format: "md", "json", "html", or "duckdb"`)
 	out := fs.String("out", "", "output file path (printed to stdout when omitted, except -format duckdb)")
@@ -75,7 +75,7 @@ func (c *Cmd) RunReport(args []string) error {
 	}
 
 	if *format == "duckdb" {
-		return c.runReportDuckDB(*logPath, *recordLogPath, *configPath, *out)
+		return c.runReportDuckDB(*logDir, *recordLogDir, *configPath, *out)
 	}
 
 	render, ok := renderers[*format]
@@ -84,7 +84,7 @@ func (c *Cmd) RunReport(args []string) error {
 		return &ExitError{Code: 1}
 	}
 
-	rpt := stateStore.Analyze(*logPath, *recordLogPath)
+	rpt := stateStore.Analyze(*logDir, *recordLogDir)
 
 	if *out == "" {
 		return render(c.Stdout, rpt)
@@ -101,7 +101,7 @@ func (c *Cmd) RunReport(args []string) error {
 	return nil
 }
 
-func (c *Cmd) runReportDuckDB(logPath, recordLogPath, configPath, out string) error {
+func (c *Cmd) runReportDuckDB(logDir, recordLogDir, configPath, out string) error {
 	dbPath := out
 	if dbPath == "" {
 		// Only fall back to the configured path when DuckDB is actually
@@ -121,21 +121,21 @@ func (c *Cmd) runReportDuckDB(logPath, recordLogPath, configPath, out string) er
 		return &ExitError{Code: 1}
 	}
 
-	result, err := duckDBStore.Sync(logPath, recordLogPath, dbPath)
+	result, err := duckDBStore.Sync(logDir, recordLogDir, dbPath)
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(c.Stdout, "database written to %s\n", dbPath)
 
 	if result.ChecksLoaded {
-		fmt.Fprintln(c.Stdout, "checks table loaded from check.jsonl.")
+		fmt.Fprintln(c.Stdout, "checks table loaded from "+logDir+"/*.jsonl.")
 	} else {
-		fmt.Fprintln(c.Stdout, "check.jsonl is missing or empty -- no checks table created.")
+		fmt.Fprintln(c.Stdout, logDir+" has no log files -- no checks table created.")
 	}
 	if result.RecordsLoaded {
-		fmt.Fprintln(c.Stdout, "records table loaded from record.jsonl.")
+		fmt.Fprintln(c.Stdout, "records table loaded from "+recordLogDir+"/*.jsonl.")
 	} else {
-		fmt.Fprintln(c.Stdout, "record.jsonl is missing or empty -- no records table created.")
+		fmt.Fprintln(c.Stdout, recordLogDir+" has no log files -- no records table created.")
 	}
 	if result.ChecksLoaded {
 		fmt.Fprintln(c.Stdout, "\nMonthly summary (action counts):")

@@ -21,9 +21,10 @@ func testStarterFS() fstest.MapFS {
 func TestRun_SeedsEmptyPoliciesDir(t *testing.T) {
 	dir := t.TempDir()
 	policiesDir := filepath.Join(dir, ".guard", "policies")
-	logPath := filepath.Join(dir, ".guard", "logs", "check.jsonl")
+	checkLogDir := filepath.Join(dir, ".guard", "logs", "check")
+	recordLogDir := filepath.Join(dir, ".guard", "logs", "record")
 
-	res, err := Run(policiesDir, logPath, testStarterFS())
+	res, err := Run(policiesDir, checkLogDir, recordLogDir, testStarterFS())
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -36,15 +37,19 @@ func TestRun_SeedsEmptyPoliciesDir(t *testing.T) {
 			t.Fatalf("expected %s to be written: %v", rel, err)
 		}
 	}
-	if _, err := os.Stat(filepath.Dir(logPath)); err != nil {
-		t.Fatalf("expected logs dir to exist: %v", err)
+	if _, err := os.Stat(checkLogDir); err != nil {
+		t.Fatalf("expected check logs dir to exist: %v", err)
+	}
+	if _, err := os.Stat(recordLogDir); err != nil {
+		t.Fatalf("expected record logs dir to exist: %v", err)
 	}
 }
 
 func TestRun_DoesNotOverwriteExistingPolicies(t *testing.T) {
 	dir := t.TempDir()
 	policiesDir := filepath.Join(dir, ".guard", "policies")
-	logPath := filepath.Join(dir, ".guard", "logs", "check.jsonl")
+	checkLogDir := filepath.Join(dir, ".guard", "logs", "check")
+	recordLogDir := filepath.Join(dir, ".guard", "logs", "record")
 
 	customDir := filepath.Join(policiesDir, "custom")
 	if err := os.MkdirAll(customDir, 0o755); err != nil {
@@ -56,7 +61,7 @@ func TestRun_DoesNotOverwriteExistingPolicies(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Run(policiesDir, logPath, testStarterFS())
+	res, err := Run(policiesDir, checkLogDir, recordLogDir, testStarterFS())
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}

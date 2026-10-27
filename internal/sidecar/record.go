@@ -54,7 +54,8 @@ func BuildRecordLogEntry(raw []byte) (entry RecordLogEntry, ok bool) {
 	return entry, true
 }
 
-// AppendRecordLog appends entry as one JSON line to path.
-func AppendRecordLog(path string, entry RecordLogEntry) error {
-	return appendJSONLine(path, entry)
+// AppendRecordLog appends entry as one JSON line to dir's log file for
+// entry.Timestamp's day (UTC).
+func AppendRecordLog(dir string, entry RecordLogEntry) error {
+	return appendJSONLine(dir, entry.Timestamp, entry)
 }

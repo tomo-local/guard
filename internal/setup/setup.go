@@ -35,8 +35,9 @@ Add this to .claude/settings.json to run "guard check" before every Bash command
 
 // Result summarizes what Run did, for the caller to report to the user.
 type Result struct {
-	LogsDir     string
-	PoliciesDir string
+	CheckLogDir  string
+	RecordLogDir string
+	PoliciesDir  string
 	// ExistingPolicyCount is how many policies were already present in
 	// PoliciesDir before Run looked at it. When > 0, SeededPolicyCount is
 	// always 0 -- an existing policies directory is left untouched.
@@ -44,14 +45,17 @@ type Result struct {
 	SeededPolicyCount   int
 }
 
-// Run creates the logs directory (the parent of logPath) and seeds
-// policiesDir with the starter policies found under starterRoot in
-// starterFS, but only when policiesDir has no policy manifests yet.
-func Run(policiesDir, logPath string, starterFS fs.FS) (Result, error) {
-	res := Result{PoliciesDir: policiesDir, LogsDir: filepath.Dir(logPath)}
+// Run creates the check/record log directories and seeds policiesDir
+// with the starter policies found under starterRoot in starterFS, but
+// only when policiesDir has no policy manifests yet.
+func Run(policiesDir, checkLogDir, recordLogDir string, starterFS fs.FS) (Result, error) {
+	res := Result{PoliciesDir: policiesDir, CheckLogDir: checkLogDir, RecordLogDir: recordLogDir}
 
-	if err := os.MkdirAll(res.LogsDir, 0o755); err != nil {
-		return res, fmt.Errorf("create logs dir %q: %w", res.LogsDir, err)
+	if err := os.MkdirAll(res.CheckLogDir, 0o755); err != nil {
+		return res, fmt.Errorf("create check log dir %q: %w", res.CheckLogDir, err)
+	}
+	if err := os.MkdirAll(res.RecordLogDir, 0o755); err != nil {
+		return res, fmt.Errorf("create record log dir %q: %w", res.RecordLogDir, err)
 	}
 
 	existing, err := policy.LoadDir(policiesDir)

@@ -10,12 +10,12 @@ import (
 )
 
 const initUsage = `Usage:
-  guard init [-rules <dir>] [-log <path>] [-config <path>] [-duckdb] [-duckdb-path <path>]
+  guard init [-rules <dir>] [-log <dir>] [-record-log <dir>] [-config <path>] [-duckdb] [-duckdb-path <path>]
 
 Options:
   -rules string        policy directory to set up (default ".guard/policies", env GUARD_POLICIES_DIR)
-  -log string           check decision log path, used only to derive the logs
-                          directory to create (default ".guard/logs/check.jsonl", env GUARD_LOG_PATH)
+  -log string           check decision log directory to create (default ".guard/logs/check", env GUARD_LOG_PATH)
+  -record-log string    record log directory to create (default ".guard/logs/record", env GUARD_RECORD_LOG_PATH)
   -config string         project settings file path (default ".guard/config.yaml", env GUARD_CONFIG_PATH)
   -duckdb               enable/disable "guard report --format duckdb" (true/false)
   -duckdb-path string    DuckDB database file path when -duckdb is enabled (default ".guard/guard.duckdb")
@@ -44,7 +44,8 @@ func (c *Cmd) RunInit(args []string) error {
 	flagSet := flag.NewFlagSet("init", flag.ContinueOnError)
 	flagSet.SetOutput(c.Stderr)
 	rulesDir := flagSet.String("rules", defaultPoliciesDir(), "policy directory to set up (env GUARD_POLICIES_DIR)")
-	logPath := flagSet.String("log", defaultLogPath(), "check decision log path, used to derive the logs directory (env GUARD_LOG_PATH)")
+	logDir := flagSet.String("log", defaultLogDir(), "check decision log directory to create (env GUARD_LOG_PATH)")
+	recordLogDir := flagSet.String("record-log", defaultRecordLogDir(), "record log directory to create (env GUARD_RECORD_LOG_PATH)")
 	configPath := flagSet.String("config", defaultConfigPath(), "project settings file path (env GUARD_CONFIG_PATH)")
 	duckdbFlag := flagSet.Bool("duckdb", false, `enable/disable "guard report --format duckdb"`)
 	duckdbPathFlag := flagSet.String("duckdb-path", "", "DuckDB database file path when -duckdb is enabled")
@@ -63,12 +64,13 @@ func (c *Cmd) RunInit(args []string) error {
 		}
 	})
 
-	res, err := setup.Run(*rulesDir, *logPath, c.StarterPolicies)
+	res, err := setup.Run(*rulesDir, *logDir, *recordLogDir, c.StarterPolicies)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(c.Stdout, "logs directory ready: %s\n", res.LogsDir)
+	fmt.Fprintf(c.Stdout, "check log directory ready: %s\n", res.CheckLogDir)
+	fmt.Fprintf(c.Stdout, "record log directory ready: %s\n", res.RecordLogDir)
 	if res.ExistingPolicyCount > 0 {
 		fmt.Fprintf(c.Stdout, "policies directory already has %d polic%s, left untouched: %s\n", res.ExistingPolicyCount, plural(res.ExistingPolicyCount), res.PoliciesDir)
 	} else {
