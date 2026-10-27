@@ -19,7 +19,7 @@ valid `.guard/policies/` manifest, then validate it.
 2. If `.guard/policies/` doesn't exist yet or is empty, tell the user to run
    `guard init` first (or offer to run it) instead of inventing a layout.
 
-## Schema (binary action + modifiers)
+## Schema
 
 ```yaml
 apiVersion: ai-guard/v1
@@ -30,7 +30,7 @@ spec:
   target:
     module: permission   # fixed value, always "permission"
     tool: <command name, e.g. "git", "rm", "curl">
-  action: ALLOW | DENY    # exactly one, applies to every rule in this file
+  action: ALLOW | DENY | CONFIRM   # exactly one, applies to every rule in this file
   rules:
     - to:
         label: <string>                # optional, free text -- purely descriptive, NOT used for matching
@@ -39,11 +39,6 @@ spec:
           anyOf: ["-f", "--force"]    # optional: argv must contain one of these (literal match, no regex/globs)
           noneOf: ["-x"]              # optional: argv must contain none of these (anyOf and/or noneOf)
       options:
-        confirm:                     # optional, ALLOW only -- turns this rule's ALLOW into a
-          enabled: true              # human-confirmation gate. NEVER combine with action: DENY.
-          message:                  # optional: wording specific to this confirmation gate;
-            reason: "{cmd} is ..."  # overrides the rule's own message below when both are set
-            next: "Ask the user to ..."
         customCheck:                 # optional, delegates to a script (see below)
           path: "./scripts/x.sh"     # exactly one of path/command
           command: "..."
@@ -52,8 +47,7 @@ spec:
           when:
             - key: exit
               value: 0
-              action: ALLOW | DENY
-              confirm: true          # same confirm-modifier rule as above
+              action: ALLOW | DENY | CONFIRM
       message:
         reason: "{cmd} is ..."       # English -- sent to the AI as permissionDecisionReason
         next: "Ask the user to ..."  # English -- what the AI should do next
@@ -61,25 +55,15 @@ spec:
 
 Key rules to follow:
 
-- **`action` is ALLOW or DENY only.** There is no `CONFIRM` value in the YAML.
-  To make something require confirmation, set `action: ALLOW` plus
-  `options.confirm.enabled: true` on the matching rule.
-- **Never write `options.confirm.enabled: true` together with `action:
-  DENY`** on the same rule/resource -- `guard lint` rejects this as a
-  contradiction (DENY is meant to be unconditional). If the user wants
-  "deny unless a check passes", model it as `action: DENY` with
-  `options.customCheck.when[].action: ALLOW` instead.
-- **Message precedence: `options.confirm.message` > the rule's own
-  top-level `message`.** Use the rule's top-level `message` for the
-  general case (e.g. why a DENY rule denies), and add
-  `options.confirm.message` only when the confirmation gate specifically
-  needs different wording. If both are absent, no message is shown.
-- **Action precedence when a rule has both `options.confirm` and
-  `options.customCheck`: `customCheck` > `confirm` > the plain base
-  action.** A matched `when` entry always wins -- even if it resolves to
-  plain ALLOW and overrides the rule's own `confirm.enabled: true`.
-  `confirm` only applies when `customCheck` is absent, didn't run, or had
-  no matching `when` entry.
+- **`action` is ALLOW, DENY or CONFIRM**, one per file. CONFIRM is a peer
+  value (the user is asked before the command runs), not a modifier on
+  ALLOW; there is no `options.confirm`.
+- **`customCheck` overrides the policy's own action** when a `when` entry
+  matches the script's exit code -- even downgrading a DENY or CONFIRM to
+  ALLOW. With no match (or on timeout) the policy's own `action` stands.
+  "Deny unless a check passes" is `action: DENY` with a `when` entry whose
+  `action` is ALLOW (or CONFIRM). The override is decided per policy,
+  before policies are compared.
 - **`to.label` is free text and purely descriptive -- it plays no part in
   matching.** Only `functions`/`args` affect which rule a command
   matches. Use `label` as a short note for readers/auditors (e.g.
@@ -88,8 +72,8 @@ Key rules to follow:
 - **One resource = one tool + one action.** If a resource for that
   tool+action already exists, add a new entry to its `rules:` list instead
   of creating a duplicate file. Only create a new file when the user needs a
-  *different* action for the same tool (e.g. `git/allow.yaml` for
-  ALLOW-with-confirm, `git/destructive-deny.yaml` for DENY).
+  *different* action for the same tool (e.g. `git/allow.yaml` for ALLOW,
+  `git/write-confirm.yaml` for CONFIRM, `git/destructive-deny.yaml` for DENY).
 - **One command, one policy**: two policies for the same tool must never
   match the same command -- `guard lint` reports an error if they can.
   **Distinguishing by flags** (e.g. "`git push` is CONFIRM, `git push -f`
@@ -117,7 +101,7 @@ decides only commands none of them matched. See `docs/manifest-schema.md`.
 
 1. Run `guard lint` (or `go run . lint` from a source checkout without a
    built binary) and fix every error it reports before telling the user
-   you're done. An overlap error ("both policies match the same command")
+   you're done. An overlap error ("overlaps with <file>")
    means the two policies need disjoint conditions -- add `args.noneOf`
    to the more lenient one; don't leave it for strictest-wins.
 2. Show the user a concise diff (or just the new/changed file content) of
