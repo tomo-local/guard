@@ -18,7 +18,7 @@ const (
 // tool/function/args.
 //
 // `validate` tags declare required-ness/enum constraints and are enforced
-// by validateStruct (see validate.go); commandgate_lint.go only hand-codes checks that
+// by validateStruct (see validate.go); command_gate_lint.go only hand-codes checks that
 // can't be expressed as a single field constraint (e.g. detecting two
 // catch-all rules across a slice).
 type CommandGatePolicy struct {

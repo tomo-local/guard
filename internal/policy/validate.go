@@ -8,7 +8,7 @@ import (
 	"github.com/go-playground/validator/v10"
 )
 
-// validate runs the `validate:"..."` struct tags declared in commandgate.go. It
+// validate runs the `validate:"..."` struct tags declared in command_gate.go. It
 // is a package-level singleton because go-playground/validator caches
 // struct metadata internally and is documented as safe for concurrent use
 // once configured.
