@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>guard report</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #1a1a1a; background: #fff; }
+  h1 { font-size: 1.4rem; margin-bottom: 0; }
+  .generated { color: #666; font-size: 0.85rem; margin-top: 0.2rem; }
+  section { margin-top: 2rem; }
+  h2 { font-size: 1.05rem; border-bottom: 1px solid #ddd; padding-bottom: 0.3rem; }
+  table { border-collapse: collapse; width: 100%; max-width: 640px; }
+  th, td { text-align: left; padding: 0.3rem 0.8rem 0.3rem 0; border-bottom: 1px solid #eee; }
+  th { color: #666; font-weight: 600; font-size: 0.85rem; }
+  .bar { display: inline-block; height: 0.8rem; background: #4a7; vertical-align: middle; margin-right: 0.4rem; }
+  .deny { background: #c44; }
+  .confirm { background: #e0a030; }
+  .allow { background: #4a7; }
+  .muted { color: #888; }
+  .error { color: #c44; }
+</style>
+</head>
+<body>
+<h1>guard report</h1>
+<div class="generated">generated {{.GeneratedAt.Format "2006-01-02 15:04:05 UTC"}}</div>
+
+<section>
+  <h2>Overview</h2>
+  <table>
+    <tr><th>log</th><th>entries</th><th>skipped lines</th><th>status</th></tr>
+    <tr>
+      <td>check.jsonl</td>
+      <td>{{.CheckEntries}}</td>
+      <td>{{.CheckSkippedLines}}</td>
+      <td>{{if .CheckLogErr}}<span class="error">{{.CheckLogErr}}</span>{{else}}ok{{end}}</td>
+    </tr>
+    <tr>
+      <td>record.jsonl</td>
+      <td>{{.RecordEntries}}</td>
+      <td>{{.RecordSkippedLines}}</td>
+      <td>{{if .RecordLogErr}}<span class="error">{{.RecordLogErr}}</span>{{else}}ok{{end}}</td>
+    </tr>
+  </table>
+</section>
+
+{{if eq .CheckEntries 0}}
+<section><p class="muted">No check.jsonl entries to summarize yet.</p></section>
+{{else}}
+
+<section>
+  <h2>Actions (final decision)</h2>
+  <table>
+    {{range $action, $count := .ActionCounts}}
+    <tr><td>{{$action}}</td><td>{{$count}}</td></tr>
+    {{end}}
+  </table>
+</section>
+
+<section>
+  <h2>Mode</h2>
+  <table>
+    {{range $mode, $count := .ModeCounts}}
+    <tr><td>{{$mode}}</td><td>{{$count}}</td></tr>
+    {{end}}
+  </table>
+</section>
+
+<section>
+  <h2>Default / fallback rates</h2>
+  <table>
+    <tr><td>no policy matched (default action used)</td><td>{{.DefaultCount}} / {{.CheckEntries}}</td></tr>
+    <tr><td>shell parse fell back to whitespace split</td><td>{{.FallbackParseCount}} / {{.CheckEntries}}</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>Per-tool action breakdown</h2>
+  {{if .ToolActionCounts}}
+  <table>
+    <tr><th>tool</th><th>action</th><th>count</th></tr>
+    {{range $tool, $actions := .ToolActionCounts}}
+      {{range $action, $count := $actions}}
+      <tr><td>{{$tool}}</td><td>{{$action}}</td><td>{{$count}}</td></tr>
+      {{end}}
+    {{end}}
+  </table>
+  {{else}}<p class="muted">(none)</p>{{end}}
+</section>
+
+<section>
+  <h2>Top DENY/CONFIRM by tool+function</h2>
+  {{if .TopDenyConfirm}}
+  <table>
+    <tr><th>tool</th><th>function</th><th>deny</th><th>confirm</th></tr>
+    {{range .TopDenyConfirm}}
+    <tr><td>{{.Tool}}</td><td>{{.Function}}</td><td>{{.DenyCount}}</td><td>{{.ConfirmCount}}</td></tr>
+    {{end}}
+  </table>
+  {{else}}<p class="muted">(none)</p>{{end}}
+</section>
+
+<section>
+  <h2>customCheck</h2>
+  <table>
+    <tr><td>runs</td><td>{{.CustomCheckRuns}}</td></tr>
+    <tr><td>timeouts</td><td>{{.CustomCheckTimeouts}}</td></tr>
+  </table>
+  {{if .CustomCheckOverrides}}
+  <table>
+    <tr><th>override action</th><th>count</th></tr>
+    {{range $action, $count := .CustomCheckOverrides}}
+    <tr><td>{{$action}}</td><td>{{$count}}</td></tr>
+    {{end}}
+  </table>
+  {{end}}
+</section>
+
+<section>
+  <h2>Daily timeline (UTC)</h2>
+  {{if .DailyTimeline}}
+  <table>
+    <tr><th>date</th><th>breakdown</th></tr>
+    {{range .DailyTimeline}}
+    <tr><td>{{.Date}}</td><td>
+      {{range $action, $count := .Counts}}{{$action}}={{$count}} {{end}}
+    </td></tr>
+    {{end}}
+  </table>
+  {{else}}<p class="muted">(none)</p>{{end}}
+</section>
+
+<section>
+  <h2>record.jsonl (actual execution)</h2>
+  <table>
+    <tr><td>entries</td><td>{{.RecordEntries}}</td></tr>
+    <tr><td>interrupted</td><td>{{.RecordInterrupted}}</td></tr>
+  </table>
+</section>
+
+{{end}}
+</body>
+</html>

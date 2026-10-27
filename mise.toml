@@ -3,7 +3,7 @@ go = "1.26.4"
 
 [tasks.build]
 description = "go build"
-run = "go build -o bin/habit"
+run = "go build -o bin/guard"
 
 [tasks.test]
 run = "go test ./..."

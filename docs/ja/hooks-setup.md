@@ -37,7 +37,7 @@
 - **`PostToolUse` → `guard record`**: Bashコマンドの実行**後**に走り、実際に何が
   起きたか（コマンド・stdout/stderrの生出力・中断されたか）を
   `.guard/logs/record.jsonl` に追記する。何もブロックせず常に exit 0。
-  （将来実装予定の）`guard report` による事後分析のためだけに使う。
+  `guard report` による事後分析のためだけに使う。
 
 ## コマンドの解決方法
 

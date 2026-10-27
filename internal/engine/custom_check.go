@@ -1,13 +1,10 @@
 package engine
 
 import (
-	"bytes"
-	"context"
-	"errors"
-	"os/exec"
 	"time"
 
 	"ai-guard-tracker/internal/policy"
+	"ai-guard-tracker/internal/procexec"
 )
 
 // CustomCheckResult records what happened when a rule's options.customCheck
@@ -33,47 +30,27 @@ func RunCustomCheck(cc *policy.CustomCheck) CustomCheckResult {
 		timeout = policy.DefaultCustomCheckTimeoutSeconds
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-	defer cancel()
-
-	var cmd *exec.Cmd
+	var name string
+	var args []string
 	if cc.Path != "" {
-		cmd = exec.CommandContext(ctx, cc.Path, cc.Args...)
+		name, args = cc.Path, cc.Args
 	} else {
-		args := append([]string{"-c", cc.Command}, cc.Args...)
-		cmd = exec.CommandContext(ctx, "sh", args...)
+		name, args = "sh", append([]string{"-c", cc.Command}, cc.Args...)
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	run := procexec.Run(time.Duration(timeout)*time.Second, name, args, nil)
 
-	result := CustomCheckResult{Ran: true}
-	err := cmd.Run()
-
-	if ctx.Err() == context.DeadlineExceeded {
-		result.TimedOut = true
-		result.RunErr = ctx.Err()
-		result.Stdout = stdout.String()
-		result.Stderr = stderr.String()
+	result := CustomCheckResult{
+		Ran:      true,
+		ExitCode: run.ExitCode,
+		TimedOut: run.TimedOut,
+		RunErr:   run.RunErr,
+		Stdout:   run.Stdout,
+		Stderr:   run.Stderr,
+	}
+	if result.TimedOut || result.RunErr != nil {
 		return result
 	}
-
-	var exitErr *exec.ExitError
-	switch {
-	case err == nil:
-		result.ExitCode = 0
-	case errors.As(err, &exitErr):
-		result.ExitCode = exitErr.ExitCode()
-	default:
-		result.RunErr = err
-		result.Stdout = stdout.String()
-		result.Stderr = stderr.String()
-		return result
-	}
-
-	result.Stdout = stdout.String()
-	result.Stderr = stderr.String()
 
 	for _, w := range cc.When {
 		if w.Key != "exit" || w.Value != result.ExitCode {

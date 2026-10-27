@@ -24,6 +24,7 @@ type Decision struct {
 	UsedFallbackParse bool
 	Default           bool   // true when no policy matched and DefaultAction was used
 	Tool              string // set by EvaluateCommand; blank on the aggregated EvaluateAll result
+	Function          string // set by EvaluateCommand (firstFunction heuristic); blank on the aggregated EvaluateAll result or when the tool has no subcommand
 }
 
 const defaultNext = "Review the command and confirm with the user before proceeding."
@@ -99,9 +100,12 @@ func (e *Evaluator) EvaluateCommand(cmd shellcmd.SimpleCommand) Decision {
 		}
 	}
 
+	function := firstFunction(cmd.Args)
+
 	if len(matches) == 0 {
 		d := defaultDecision(commandString(cmd))
 		d.Tool = cmd.Tool
+		d.Function = function
 		return d
 	}
 
@@ -136,6 +140,7 @@ func (e *Evaluator) EvaluateCommand(cmd shellcmd.SimpleCommand) Decision {
 		Label:           strings.Join(labels, ", "),
 		MatchedPolicies: paths,
 		Tool:            cmd.Tool,
+		Function:        function,
 	}
 
 	if customCheck != nil {

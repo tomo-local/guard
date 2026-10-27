@@ -15,6 +15,7 @@ ALLOW / DENY / CONFIRM に判定する guardrail CLI `guard`。
   - [`guard check`](#guard-check)
   - [`guard record`](#guard-record)
   - [`guard lint`](#guard-lint)
+  - [`guard report`](#guard-report)
 - [設定](#設定)
 - [ポリシーの書き方](#ポリシーの書き方)
   - [フラグ単位のマッチ](#フラグ単位のマッチtoargsanyof)
@@ -35,8 +36,8 @@ force-push や `rm -rf`、未レビューの `curl | sh` のように、黙っ�
 を参考にした Kubernetes 風マニフェスト。Istio の `AuthorizationPolicy` を書いた
 ことがあれば見覚えのある形になっているはず。
 
-`guard init` / `guard check` / `guard record` / `guard lint` を実装している。
-残っているのは `guard report` のみ（詳細は `tmp/remaining-plan.md` 参照）。
+`guard init` / `guard check` / `guard record` / `guard lint` / `guard
+report` をすべて実装している。
 
 ## 特徴
 
@@ -58,7 +59,7 @@ force-push や `rm -rf`、未レビューの `curl | sh` のように、黙っ�
   と実際の実行結果（`guard record` → `.guard/logs/record.jsonl`）の両方を
   要約せずJSON Linesで記録する。
 - **環境変数で設定可能**（`GUARD_POLICIES_DIR`、`GUARD_LOG_PATH`、
-  `GUARD_RECORD_LOG_PATH`）。配布したバイナリに毎回フラグを渡す必要が無い。
+  `GUARD_RECORD_LOG_PATH`、`GUARD_CONFIG_PATH`）。配布したバイナリに毎回フラグを渡す必要が無い。
 
 ## クイックスタート
 
@@ -85,7 +86,8 @@ guard check "git push --force"
 
 ### `guard init`
 
-新しいプロジェクトで `.guard/policies/`・`.guard/logs/` を用意する。
+新しいプロジェクトで `.guard/policies/`・`.guard/logs/`・`.guard/config.yaml`
+を用意する。
 
 ```bash
 guard init
@@ -95,10 +97,21 @@ guard init
   スターターポリシー（`git`/`rm`/`curl` 向けの5ファイル、`go:embed` でバイナリに
   埋め込み済み）を書き込む。既にポリシーがある場合は**一切上書きしない**
 - `.guard/logs/`（ログの出力先ディレクトリ）も作成する
+- **`.guard/config.yaml`（このCLI自身のプロジェクト設定、Bashポリシーとは別物）も
+  用意する**。今のところ設定項目は `guard report --format duckdb` を使うかどうかと、
+  使う場合のデータベースファイルの場所のみ:
+  - `-duckdb`/`-duckdb-path` のいずれかが渡された場合は、何も聞かずにその内容を
+    保存する（スクリプト/非対話実行向け）
+  - そうでなく、`.guard/config.yaml` がまだ存在しない場合は、標準入出力で対話的に
+    質問する（`[y/N]`、続けてデフォルト付きのパス入力）。空/EOFの回答は安全側の
+    「いいえ」（DuckDB無効のまま）にフォールバックするため、非対話的なstdinでも
+    ハングしたり意図せず有効化されたりしない
+  - `.guard/config.yaml` が既に存在していて、どちらのフラグも渡されなかった場合は
+    そのまま変更しない -- `guard init` を再実行しても聞き直されない
 - `.claude/settings.json` には**自動で書き込まない**（既存設定を壊すリスクを避けるため）。
   追記すべき hook JSON スニペットを標準出力に表示するだけ
-- `-rules`/`-log` の作成先解決ルールは `guard check`/`guard lint` と共通
-  （後述の[設定](#設定)参照）
+- `-rules`/`-log`/`-config` の作成先解決ルールは `guard check`/`guard lint`/
+  `guard report` と共通（後述の[設定](#設定)参照）
 
 ### `guard check`
 
@@ -154,6 +167,42 @@ guard lint -rules ./some/other/dir
 
 exit code は `0=エラー無し`（warningのみなら0のまま出力はされる）、`1=エラーあり`。
 
+### `guard report`
+
+`.guard/logs/check.jsonl` と `.guard/logs/record.jsonl` を集計してサマリーを
+出力する。action/mode別件数、tool別の内訳、DENY/CONFIRMが多い `tool`+subcommand
+の組み合わせ、`options.customCheck` の実行/タイムアウト/override件数、日次
+タイムライン、record側の中断件数などを含む。
+
+```bash
+guard report                                 # 自己完結HTMLをstdoutへ（デフォルト）
+guard report --format md                     # Markdownサマリーをstdoutへ
+guard report --format json --out report.json # 機械可読な形式でファイルへ出力
+guard report --format duckdb                 # guard initで設定したDBパスへロード
+```
+
+- **`-format`** は `md` / `json` / `html`（**デフォルト**） / `duckdb` のいずれか。
+  `md`/`json`/`html` は同じデータを形式だけ変えて出力する -- PRやチャットに
+  貼るなら `md`、スクリプト処理するなら `json`、外部リクエスト無しでオフライン
+  共有できるページが欲しいなら `html`、好きな方を選べる。いずれも `-out` を
+  省略すればstdoutへ、指定すればそのファイルへ書き出す。
+- `-format duckdb` を指定する場合は、PATH上の `duckdb` CLI（例: `brew install
+  duckdb`）に加えてデータベースのパスが必要 -- `-out` が指定されていればそれを、
+  無ければ `.guard/config.yaml`（`guard init` が用意する。後述）の
+  `duckdb.path` を使う。現在のJSONLの内容から、そのデータベースファイルに
+  `checks`/`records` テーブルを（差分ではなく）毎回フルリロードで作り直し、
+  DuckDB自身がレンダリングした月別×action別の集計結果を表示する。生成された
+  `.duckdb` ファイルはそのまま残るので、以降は自分で自由にSQLを投げられる
+  （`duckdb <path>`）-- guardが唯一のクエリ手段になろうとはしない。
+- `-log`/`-record-log`/`-config` の解決順は他コマンドと同じ（`-flag` > 環境変数 >
+  デフォルト、[設定](#設定)参照）。
+- どちらのログも事前に存在しなくてよい -- 無い/空の場合はそのことを示す
+  レポートを出力するだけでエラーにはしない（未知の `-format`、`-format duckdb`
+  で `-out` も設定済みパスも無い場合、`duckdb` CLIが無い場合などの
+  usage/runtimeエラー以外はexit code常に`0`）。
+- v1では日付範囲やtool/actionでの絞り込みは未対応。
+  [既知の制限（v1）](#既知の制限v1)を参照。
+
 ## 設定
 
 `-rules`/`-log` はCLIとして配布・インストールした場合など、プロジェクトごとに毎回
@@ -162,8 +211,9 @@ exit code は `0=エラー無し`（warningのみなら0のまま出力はされ
 | 環境変数 | 対象コマンド | 対象フラグ | デフォルト |
 |---|---|---|---|
 | `GUARD_POLICIES_DIR` | `init`/`check`/`lint` | `-rules` | `.guard/policies` |
-| `GUARD_LOG_PATH` | `init`/`check` | `-log` | `.guard/logs/check.jsonl`（`init`はこのパスの親ディレクトリを作成） |
-| `GUARD_RECORD_LOG_PATH` | `record` | `-log` | `.guard/logs/record.jsonl` |
+| `GUARD_LOG_PATH` | `init`/`check`/`report` | `-log` | `.guard/logs/check.jsonl`（`init`はこのパスの親ディレクトリを作成） |
+| `GUARD_RECORD_LOG_PATH` | `record`/`report` | `-log`（`record`）/ `-record-log`（`report`） | `.guard/logs/record.jsonl` |
+| `GUARD_CONFIG_PATH` | `init`/`report` | `-config` | `.guard/config.yaml`（`init`が書き込み、`report`は読むだけ） |
 
 ```bash
 GUARD_POLICIES_DIR=./some/other/dir guard lint
@@ -316,6 +366,14 @@ spec:
 - コマンド置換（`$(...)`）の中の呼び出しも AST walk で評価対象になるが、リテラルでない
   引数（変数展開など）は元のシェル構文がそのまま文字列化されるため、`functions` 一致の
   対象にはならずその呼び出しは catch-all/デフォルトにフォールバックする。
+- `guard report` には日付範囲やtool/actionでの絞り込みが無く、`check.jsonl`と
+  `record.jsonl`のエントリも結合しない（Claude Codeの`PreToolUse`ペイロードには
+  `tool_use_id`が無く、確実に結合できるキーが無いため）-- 各ログは独立に集計する。
+  `-format duckdb`で作られる`checks`/`records`テーブルも同様で、両者を
+  `JOIN`できる共通キーは無い。
+- `check.jsonl`の`commands[]`にある`function`フィールド（`guard report`の
+  tool+function集計に使う）は、このフィールドが追加された後に記録された
+  エントリにのみ存在する。それより古いログ行には単に存在しない。
 
 ## 開発
 

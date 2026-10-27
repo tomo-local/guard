@@ -38,6 +38,8 @@ func main() {
 		err = c.RunInit(args)
 	case "record":
 		err = c.RunRecord(args)
+	case "report":
+		err = c.RunReport(args)
 	case "", "-h", "--help", "help":
 		showHelp()
 		os.Exit(0)
@@ -70,6 +72,7 @@ Commands:
   check    Evaluate a Bash command against .guard/policies (CLI arg or PreToolUse hook on stdin)
   record   Log a Bash command's result (PostToolUse hook on stdin only)
   lint     Validate .guard/policies manifests
+  report   Summarize .guard/logs/*.jsonl as md/json/html (default html) or a DuckDB database
   help     Show this help message
   -h, --help   Show this help message
 
@@ -80,5 +83,9 @@ Examples:
   guard check "git push --force"
   echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | guard check
   guard lint
+  guard report
+  guard report --format md
+  guard report --format json --out .guard/report.json
+  guard report --format duckdb --out .guard/guard.duckdb
 `)
 }

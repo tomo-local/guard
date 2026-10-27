@@ -177,9 +177,10 @@ func buildLogEntry(mode, sessionID, raw string, final engine.Decision, perCmd []
 
 	for _, d := range perCmd {
 		entry.Commands = append(entry.Commands, sidecar.CommandLog{
-			Tool:   d.Tool,
-			Action: string(d.Action),
-			Label:  d.Label,
+			Tool:     d.Tool,
+			Action:   string(d.Action),
+			Label:    d.Label,
+			Function: d.Function,
 		})
 	}
 

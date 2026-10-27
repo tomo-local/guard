@@ -135,6 +135,33 @@ func TestEvaluateCommand_LabelIsPurelyDescriptive(t *testing.T) {
 	}
 }
 
+func TestEvaluateCommand_FunctionIsSet(t *testing.T) {
+	// Function carries the firstFunction heuristic result into Decision
+	// regardless of whether a policy matched, so guard report can
+	// aggregate by tool+function.
+	e := NewEvaluator(samplePolicies())
+
+	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push", "-f"}})
+	if got.Function != "push" {
+		t.Fatalf("Function = %q, want %q", got.Function, "push")
+	}
+
+	// Unmatched subcommand still reports the function on the default decision.
+	got = e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"bisect"}})
+	if got.Function != "bisect" {
+		t.Fatalf("Function = %q, want %q on an unmatched default decision", got.Function, "bisect")
+	}
+
+	// Flat tool invoked with no non-flag argument -> no function (the
+	// heuristic only ever returns the first arg that doesn't look like a
+	// flag; "rm -rf /" itself does report "/" as its "function", which is
+	// a known artifact of the heuristic, not of this new field).
+	got = e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "rm", Args: []string{"-rf"}})
+	if got.Function != "" {
+		t.Fatalf("Function = %q, want empty when every arg looks like a flag", got.Function)
+	}
+}
+
 func TestEvaluateCommand_DefaultReasonMentionsCommand(t *testing.T) {
 	e := NewEvaluator(samplePolicies())
 	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "curl", Args: []string{"http://x"}})
