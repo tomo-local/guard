@@ -81,28 +81,100 @@ func TestLint_ArgsMatchEmptyElementIsAnError(t *testing.T) {
 	}
 }
 
-func TestLint_ArgsDifferenceAvoidsFalseCrossPolicyDuplicate(t *testing.T) {
+func hasOverlapError(issues []Issue) bool {
+	return hasErrorContaining(issues, "overlaps with")
+}
+
+func TestLint_AnyOfNarrowingStillOverlaps(t *testing.T) {
 	p1 := validPolicy()
 	p1.SourcePath = "a.yaml"
 	p1.Spec.Rules[0].To.Args = &ArgsMatch{AnyOf: []string{"-f"}}
 
 	p2 := validPolicy()
 	p2.SourcePath = "b.yaml"
-	// Same tool/functions as p1 but no args condition -- these should
-	// NOT be flagged as a duplicate match condition, since args narrows p1
-	// to a strict subset of what p2 matches.
+	// p1 only matches a subset of what p2 matches, but "git push -f"
+	// satisfies both, so this is an overlap.
 	p2.Spec.Rules[0].To.Args = nil
 
-	issues := lintAll(p1, p2)
-	if hasWarningContaining(issues, "duplicate match condition") {
-		t.Fatalf("did not expect a duplicate warning when args differ, got %v", issues)
+	if !hasOverlapError(lintAll(p1, p2)) {
+		t.Fatal("expected an overlap error when one rule narrows the other")
 	}
 }
 
-func TestLint_LabelDifferenceDoesNotAvoidCrossPolicyDuplicate(t *testing.T) {
-	// Unlike Args, Label plays no part in matching (it's purely
-	// descriptive -- see To.Label's doc comment), so two rules differing
-	// only in Label are still a genuine duplicate match condition.
+func TestLint_NoneOfSeparatesPolicies(t *testing.T) {
+	// The shape of the shipped git policies: write-confirm steps aside
+	// for the -f/--force that push-force-deny owns.
+	p1 := validPolicy()
+	p1.SourcePath = "write-confirm.yaml"
+	p1.Spec.Rules = []Rule{{To: To{Functions: []string{"push"}, Args: &ArgsMatch{NoneOf: []string{"-f", "--force"}}}}}
+
+	p2 := validPolicy()
+	p2.SourcePath = "push-force-deny.yaml"
+	p2.Spec.Action = ActionDeny
+	p2.Spec.Rules = []Rule{{To: To{Functions: []string{"push"}, Args: &ArgsMatch{AnyOf: []string{"-f", "--force"}}}}}
+
+	if issues := lintAll(p1, p2); len(issues) != 0 {
+		t.Fatalf("expected no issues, got %v", issues)
+	}
+}
+
+func TestLint_NoneOfPartiallyCoveringStillOverlaps(t *testing.T) {
+	p1 := validPolicy()
+	p1.SourcePath = "a.yaml"
+	p1.Spec.Rules = []Rule{{To: To{Functions: []string{"push"}, Args: &ArgsMatch{NoneOf: []string{"-f"}}}}}
+
+	p2 := validPolicy()
+	p2.SourcePath = "b.yaml"
+	p2.Spec.Rules = []Rule{{To: To{Functions: []string{"push"}, Args: &ArgsMatch{AnyOf: []string{"-f", "--force"}}}}}
+
+	// "git push --force" matches both: a excludes only -f.
+	if !hasOverlapError(lintAll(p1, p2)) {
+		t.Fatal("expected an overlap error")
+	}
+}
+
+func TestLint_OverlapCases(t *testing.T) {
+	cases := []struct {
+		name     string
+		a, b     To
+		overlaps bool
+	}{
+		{"disjoint functions", To{Functions: []string{"add"}}, To{Functions: []string{"push"}}, false},
+		{"shared function", To{Functions: []string{"add", "push"}}, To{Functions: []string{"push"}}, true},
+		{"catch-all vs function", To{}, To{Functions: []string{"push"}}, true},
+		{"catch-all vs catch-all", To{}, To{}, true},
+		{"anyOf groups disjoint tokens both satisfiable", To{Args: &ArgsMatch{AnyOf: []string{"-a"}}}, To{Args: &ArgsMatch{AnyOf: []string{"-b"}}}, true},
+		{"anyOf vs noneOf of same tokens", To{Args: &ArgsMatch{AnyOf: []string{"-f"}}}, To{Args: &ArgsMatch{NoneOf: []string{"-f"}}}, false},
+		{"noneOf vs noneOf", To{Args: &ArgsMatch{NoneOf: []string{"-f"}}}, To{Args: &ArgsMatch{NoneOf: []string{"-g"}}}, true},
+		{"anyOf fully excluded by own noneOf elsewhere", To{Functions: []string{"push"}, Args: &ArgsMatch{AnyOf: []string{"-f"}, NoneOf: []string{"-x"}}}, To{Functions: []string{"push"}, Args: &ArgsMatch{NoneOf: []string{"-f"}}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := conditionsOverlap(tc.a, tc.b); got != tc.overlaps {
+				t.Fatalf("conditionsOverlap = %v, want %v", got, tc.overlaps)
+			}
+			if got := conditionsOverlap(tc.b, tc.a); got != tc.overlaps {
+				t.Fatalf("conditionsOverlap (swapped) = %v, want %v", got, tc.overlaps)
+			}
+		})
+	}
+}
+
+func TestLint_DifferentToolsNeverOverlap(t *testing.T) {
+	p1 := validPolicy()
+	p1.SourcePath = "a.yaml"
+	p2 := validPolicy()
+	p2.SourcePath = "b.yaml"
+	p2.Spec.Target.Tool = "docker"
+
+	if issues := lintAll(p1, p2); len(issues) != 0 {
+		t.Fatalf("expected no issues, got %v", issues)
+	}
+}
+
+func TestLint_LabelDoesNotAvoidOverlap(t *testing.T) {
+	// Label plays no part in matching, so differing labels don't separate
+	// two policies.
 	p1 := validPolicy()
 	p1.SourcePath = "a.yaml"
 	p1.Spec.Rules[0].To.Label = "one label"
@@ -111,9 +183,67 @@ func TestLint_LabelDifferenceDoesNotAvoidCrossPolicyDuplicate(t *testing.T) {
 	p2.SourcePath = "b.yaml"
 	p2.Spec.Rules[0].To.Label = "a completely different label"
 
-	issues := lintAll(p1, p2)
-	if !hasWarningContaining(issues, "duplicate match condition") {
-		t.Fatalf("expected a duplicate match condition warning despite differing labels, got %v", issues)
+	if !hasOverlapError(lintAll(p1, p2)) {
+		t.Fatal("expected an overlap error despite differing labels")
+	}
+}
+
+func TestLint_RulesInsideOnePolicyAreNotCompared(t *testing.T) {
+	p := validPolicy()
+	p.Spec.Rules = []Rule{
+		{To: To{Functions: []string{"push"}}},
+		{To: To{Functions: []string{"push"}, Args: &ArgsMatch{AnyOf: []string{"-f"}}}},
+	}
+	if hasOverlapError(lintAll(p)) {
+		t.Fatal("rule precedence inside a policy is fixed; no overlap error expected")
+	}
+}
+
+func TestLint_ArgsNoneOfOnlyIsValid(t *testing.T) {
+	p := validPolicy()
+	p.Spec.Rules[0].To.Args = &ArgsMatch{NoneOf: []string{"-f"}}
+	if issues := lintAll(p); len(issues) != 0 {
+		t.Fatalf("expected no issues, got %v", issues)
+	}
+}
+
+func TestLint_ArgsNoneOfEmptyElementIsAnError(t *testing.T) {
+	p := validPolicy()
+	p.Spec.Rules[0].To.Args = &ArgsMatch{NoneOf: []string{""}}
+	if len(lintAll(p)) == 0 {
+		t.Fatal("expected an error for an empty element in args.noneOf")
+	}
+}
+
+func TestLint_ArgsSameTokenInAnyOfAndNoneOfIsAnError(t *testing.T) {
+	p := validPolicy()
+	p.Spec.Rules[0].To.Args = &ArgsMatch{AnyOf: []string{"-f"}, NoneOf: []string{"-f"}}
+	if !hasErrorContaining(lintAll(p), "can never match") {
+		t.Fatalf("expected a can-never-match error, got %v", lintAll(p))
+	}
+}
+
+func TestArgsMatch(t *testing.T) {
+	cases := []struct {
+		name string
+		m    *ArgsMatch
+		args []string
+		want bool
+	}{
+		{"nil matches", nil, []string{"x"}, true},
+		{"anyOf hit", &ArgsMatch{AnyOf: []string{"-f"}}, []string{"push", "-f"}, true},
+		{"anyOf miss", &ArgsMatch{AnyOf: []string{"-f"}}, []string{"push"}, false},
+		{"noneOf clear", &ArgsMatch{NoneOf: []string{"-f"}}, []string{"push"}, true},
+		{"noneOf hit", &ArgsMatch{NoneOf: []string{"-f"}}, []string{"push", "-f"}, false},
+		{"anyOf hit but noneOf hit", &ArgsMatch{AnyOf: []string{"-a"}, NoneOf: []string{"-b"}}, []string{"-a", "-b"}, false},
+		{"anyOf hit and noneOf clear", &ArgsMatch{AnyOf: []string{"-a"}, NoneOf: []string{"-b"}}, []string{"-a"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := argsMatch(tc.m, tc.args); got != tc.want {
+				t.Fatalf("argsMatch = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -160,15 +290,18 @@ func TestLint_DuplicateCatchAllWarning(t *testing.T) {
 	}
 }
 
-func TestLint_CrossPolicyDuplicateWarning(t *testing.T) {
+func TestLint_CrossPolicyOverlapIsAnError(t *testing.T) {
 	p1 := validPolicy()
 	p1.SourcePath = "a.yaml"
 	p2 := validPolicy()
 	p2.SourcePath = "b.yaml"
 
 	issues := lintAll(p1, p2)
-	if !hasWarningContaining(issues, "duplicate match condition") {
-		t.Fatalf("expected a duplicate match condition warning, got %v", issues)
+	if !hasOverlapError(issues) {
+		t.Fatalf("expected an overlap error, got %v", issues)
+	}
+	if !HasErrors(issues) {
+		t.Fatal("an overlap must fail lint")
 	}
 }
 
@@ -200,4 +333,49 @@ func hasWarningContaining(issues []Issue, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestLint_OverlapMessageNamesBothFilesAndAnExampleCommand(t *testing.T) {
+	p1 := validPolicy()
+	p1.SourcePath = "git/write-confirm.yaml"
+	p1.Spec.Rules = []Rule{{To: To{Functions: []string{"push"}, Args: &ArgsMatch{NoneOf: []string{"-f"}}}}}
+
+	p2 := validPolicy()
+	p2.SourcePath = "git/push-force-deny.yaml"
+	p2.Spec.Rules = []Rule{{To: To{Functions: []string{"push"}, Args: &ArgsMatch{AnyOf: []string{"-f", "--force"}}}}}
+
+	issues := lintAll(p1, p2)
+	var overlap []Issue
+	for _, i := range issues {
+		if strings.Contains(i.Message, "overlaps with") {
+			overlap = append(overlap, i)
+		}
+	}
+	if len(overlap) != 1 {
+		t.Fatalf("expected one overlap issue per pair, got %v", issues)
+	}
+	i := overlap[0]
+	if i.Path != "git/push-force-deny.yaml" {
+		t.Fatalf("expected the issue under the file that sorts first, got %q", i.Path)
+	}
+	if i.Message != "overlaps with git/write-confirm.yaml" {
+		t.Fatalf("unexpected summary %q", i.Message)
+	}
+	want := map[string]string{
+		"example":    "`git push --force` matches both",
+		"this file":  "functions=[push] anyOf=[-f,--force]",
+		"other file": "functions=[push] noneOf=[-f]",
+	}
+	got := map[string]string{}
+	for _, d := range i.Details {
+		got[d.Label] = d.Value
+	}
+	for label, value := range want {
+		if got[label] != value {
+			t.Fatalf("detail %q = %q, want %q", label, got[label], value)
+		}
+	}
+	if got["hint"] == "" {
+		t.Fatal("expected a hint detail")
+	}
 }

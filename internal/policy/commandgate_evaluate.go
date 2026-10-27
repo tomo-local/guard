@@ -135,18 +135,32 @@ func matchRule(rules []Rule, cmd shellcmd.SimpleCommand) (Rule, bool) {
 	return Rule{}, false
 }
 
-// argsMatch reports whether args contains at least one of m.AnyOf as a
-// literal token. A nil/empty m always matches (the rule applies
-// regardless of flags).
+// argsMatch reports whether args satisfies m: at least one of m.AnyOf is
+// present as a literal token (when AnyOf is set) and none of m.NoneOf is.
+// A nil/empty m always matches (the rule applies regardless of flags).
 func argsMatch(m *ArgsMatch, args []string) bool {
-	if m == nil || len(m.AnyOf) == 0 {
+	if m == nil {
 		return true
 	}
-	for _, a := range args {
-		for _, want := range m.AnyOf {
+	has := func(want string) bool {
+		for _, a := range args {
 			if a == want {
 				return true
 			}
+		}
+		return false
+	}
+	for _, n := range m.NoneOf {
+		if has(n) {
+			return false
+		}
+	}
+	if len(m.AnyOf) == 0 {
+		return true
+	}
+	for _, w := range m.AnyOf {
+		if has(w) {
+			return true
 		}
 	}
 	return false

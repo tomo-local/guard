@@ -53,8 +53,8 @@ report` are all implemented.
   its own enum value alongside ALLOW/DENY, so "DENY but still
   confirmable" can't even be written -- a resource only ever holds one
   action.
-- **Flag-level matching** (`to.args.anyOf`) to distinguish, e.g., plain
-  `git push` from `git push -f`.
+- **Flag-level matching** (`to.args.anyOf` / `to.args.noneOf`) to
+  distinguish, e.g., plain `git push` from `git push -f`.
 - **Pluggable custom checks** (`options.customCheck`): delegate part of
   the decision to an external script and let its exit code override the
   verdict (mirrors Istio's `action: CUSTOM`).
@@ -301,8 +301,16 @@ spec:
   rules:
     - to:
         label: write
-        functions: [add, commit, push, pull, merge]    # omit for a catch-all over the whole tool
+        functions: [add, commit, pull, merge]    # omit for a catch-all over the whole tool
       message:          # optional
+        reason: "{cmd} is a write operation."
+        next: "Confirm with the user before proceeding."
+    - to:
+        label: write
+        functions: [push]
+        args:
+          noneOf: ["-f", "--force"]    # push -f/--force belongs to push-force-deny.yaml
+      message:
         reason: "{cmd} is a write operation."
         next: "Confirm with the user before proceeding."
 ```
@@ -323,9 +331,12 @@ matched (e.g. `git add -A .`).
   resource files (e.g. `git/allow.yaml`, `git/write-confirm.yaml`,
   `git/destructive-deny.yaml`). Multiple rules for the *same* action can
   still live in one file.
-- When multiple policies match the same command, or when a compound
-  command (`&&`/`;`/`|`/...) decomposes into several commands whose
-  verdicts differ, the strictest one wins: **DENY > CONFIRM > ALLOW**.
+- One command, one policy: `guard lint` rejects policies that can match
+  the same command (see [Matching on flags](#matching-on-flags-toargsanyof--toargsnoneof)).
+  When a compound command (`&&`/`;`/`|`/...) decomposes into several
+  commands whose verdicts differ, the strictest one wins: **DENY >
+  CONFIRM > ALLOW** (which is also the safety net if overlapping policies
+  slip past lint).
 - The default when nothing matches at all is **CONFIRM** -- a built-in
   fallback, not something you can write as a YAML `action`.
 - Omitting `functions` makes the rule a catch-all for every invocation of
@@ -337,18 +348,20 @@ matched (e.g. `git add -A .`).
   check log (`.guard/logs/check/*.jsonl`'s `commands[].label`) for
   readability.
 
-### Matching on flags (`to.args.anyOf`)
+### Matching on flags (`to.args.anyOf` / `to.args.noneOf`)
 
 `to.args.anyOf` restricts a rule to commands whose argv contains at least
-one of the listed tokens (literal match only -- no regex or globs). For
-example, "`git push` alone should be CONFIRM, but `git push -f`/`--force`
-should be DENY" is two separate resources: the normal
-`git/write-confirm.yaml` (CONFIRM, no `args` condition) plus a separate
-DENY resource with `args.anyOf: ["-f", "--force"]`
-(`git/push-force-deny.yaml`). When `-f` is present both match and DENY
-wins; when it's absent the DENY resource simply doesn't match, leaving
-CONFIRM in place -- the existing strictest-wins logic handles it for
-free.
+one of the listed tokens; `to.args.noneOf` restricts it to commands that
+contain none of them (literal match only -- no regex or globs).
+
+Every command must be decided by exactly one policy: `guard lint` is an
+error when two policies for the same tool can both match some command.
+So "`git push` alone should be CONFIRM, but `git push -f`/`--force`
+should be DENY" is two resources whose conditions don't overlap:
+`git/write-confirm.yaml` with `args.noneOf: ["-f", "--force"]` on its
+`push` rule, and `git/push-force-deny.yaml` with `args.anyOf: ["-f",
+"--force"]`. If overlapping policies get past lint anyway, `check` falls
+back to strictest-wins (DENY > CONFIRM > ALLOW).
 
 ```yaml
 # .guard/policies/git/push-force-deny.yaml
@@ -411,9 +424,9 @@ is used as-is.
 - Subcommand (`functions`) detection is a heuristic: "the first argument
   that doesn't start with `-`". `git -C <path> push` mistakes `<path>`
   for the function, since it directly follows a flag that takes a value.
-- Match granularity goes up to `functions` × `args.anyOf` (`to.label` is
-  descriptive only and plays no part in matching). `args.anyOf` is
-  literal-token matching only (no regex/globs, and it doesn't parse
+- Match granularity goes up to `functions` × `args.anyOf`/`args.noneOf`
+  (`to.label` is descriptive only and plays no part in matching).
+  `args` is literal-token matching only (no regex/globs, and it doesn't parse
   flag-value pairs). Anything more complex belongs in
   `options.customCheck`.
 - Calls inside command substitution (`$(...)`) are walked and evaluated

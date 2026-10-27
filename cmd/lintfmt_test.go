@@ -43,3 +43,28 @@ func TestFormatIssues_ColorOnlyWhenEnabled(t *testing.T) {
 		t.Fatalf("expected red and yellow codes, got %q", colored)
 	}
 }
+
+func TestFormatIssues_RendersDetailsAsLabeledLines(t *testing.T) {
+	issues := []policy.Issue{{
+		Severity: policy.SeverityError,
+		Path:     "a.yaml",
+		Message:  "overlaps with b.yaml",
+		Details: []policy.Detail{
+			{Label: "example", Value: "`git push -f` matches both"},
+			{Label: "this file", Value: "functions=[push]"},
+		},
+	}}
+
+	got := formatIssues(issues, painter{})
+
+	want := `a.yaml
+  error    overlaps with b.yaml
+      example     ` + "`git push -f`" + ` matches both
+      this file   functions=[push]
+
+1 error, 0 warnings in 1 file
+`
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}

@@ -15,11 +15,23 @@ const (
 type Issue struct {
 	Severity Severity
 	Path     string
-	Message  string
+	Message  string   // one-line summary
+	Details  []Detail // optional labeled facts, rendered one per line under Message
+}
+
+// Detail is one labeled fact about an Issue (e.g. the other file in an
+// overlap, an example command, a hint).
+type Detail struct {
+	Label string
+	Value string
 }
 
 func (i Issue) String() string {
-	return fmt.Sprintf("%s: [%s] %s", i.Path, i.Severity, i.Message)
+	s := fmt.Sprintf("%s: [%s] %s", i.Path, i.Severity, i.Message)
+	for _, d := range i.Details {
+		s += fmt.Sprintf("\n  %s: %s", d.Label, d.Value)
+	}
+	return s
 }
 
 // HasErrors reports whether any issue has error severity.

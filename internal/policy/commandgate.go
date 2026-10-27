@@ -100,14 +100,20 @@ type To struct {
 	Args      *ArgsMatch `yaml:"args,omitempty"`
 }
 
-// ArgsMatch restricts a rule to commands whose argv contains at least one
-// of AnyOf as a literal token (e.g. distinguishing "git push" from
-// "git push -f" without pattern matching). Deliberately no regex/globs --
-// keep matching predictable and auditable; this is usually paired with a
-// separate, stricter rule (see git/push-force-deny.yaml) rather than baked
-// into one rule.
+// ArgsMatch restricts a rule by literal tokens in the command's argv
+// (e.g. distinguishing "git push" from "git push -f" without pattern
+// matching). Deliberately no regex/globs -- keep matching predictable and
+// auditable.
+//
+// AnyOf: the argv must contain at least one of these tokens.
+// NoneOf: the argv must contain none of these tokens.
+// At least one of the two must be set; both may be (they combine with AND).
+// Because two policies may not match the same command (see
+// lintCommandGateSet), NoneOf is how a rule steps aside for a stricter
+// sibling, e.g. write-confirm's push excludes the -f that push-force-deny owns.
 type ArgsMatch struct {
-	AnyOf []string `yaml:"anyOf" validate:"min=1,dive,required"`
+	AnyOf  []string `yaml:"anyOf,omitempty" validate:"omitempty,dive,required"`
+	NoneOf []string `yaml:"noneOf,omitempty" validate:"omitempty,dive,required"`
 }
 
 // Message is attached to a rule's decision and surfaced to the AI (via

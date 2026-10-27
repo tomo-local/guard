@@ -78,6 +78,9 @@ func formatIssues(issues []policy.Issue, p painter) string {
 				label = p.yellow(label)
 			}
 			fmt.Fprintf(&b, "  %s  %s\n", label, i.Message)
+			for _, d := range i.Details {
+				fmt.Fprintf(&b, "      %s  %s\n", p.dim(fmt.Sprintf("%-10s", d.Label)), d.Value)
+			}
 		}
 		fmt.Fprintln(&b)
 	}

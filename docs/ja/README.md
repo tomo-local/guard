@@ -49,8 +49,8 @@ report` をすべて実装している。
 - **CONFIRMは修飾子ではなく同格のaction**: `spec.action: CONFIRM` はALLOW/DENYと
   並ぶenumの値そのもので、「DENYなのに確認で通せる」という組み合わせ自体が書けない
   （1リソースは1つのactionしか持てないため）。
-- **フラグ単位のマッチ**（`to.args.anyOf`）: 例えば `git push` と `git push -f`
-  を区別できる。
+- **フラグ単位のマッチ**（`to.args.anyOf` / `to.args.noneOf`）: 例えば `git push` と
+  `git push -f` を区別できる。
 - **外部スクリプトへの委譲**（`options.customCheck`）: 判定の一部を外部スクリプトに
   委譲し、その終了コードで判定を上書きできる（Istio の `action: CUSTOM` に相当）。
 - **複合コマンド対応**: `&&`/`;`/`|`/サブシェル/コマンド置換を実際のシェルAST
@@ -276,8 +276,16 @@ spec:
   rules:
     - to:
         label: write
-        functions: [add, commit, push, pull, merge]    # 省略するとツール全体へのcatch-all
+        functions: [add, commit, pull, merge]    # 省略するとツール全体へのcatch-all
       message:        # 任意
+        reason: "{cmd} is a write operation."
+        next: "Confirm with the user before proceeding."
+    - to:
+        label: write
+        functions: [push]
+        args:
+          noneOf: ["-f", "--force"]    # push -f/--force は push-force-deny.yaml の担当
+      message:
         reason: "{cmd} is a write operation."
         next: "Confirm with the user before proceeding."
 ```
@@ -307,15 +315,19 @@ spec:
   チェックログ（`.guard/logs/check/*.jsonl` の `commands[].label`）に記録され、
   可読性のために使われる。
 
-### フラグ単位のマッチ（`to.args.anyOf`）
+### フラグ単位のマッチ（`to.args.anyOf` / `to.args.noneOf`）
 
 `to.args.anyOf` を付けると、そのルールは引数（argv）に指定したトークンのいずれかを含む
-場合にのみマッチする（正規表現やglobは使わず、トークンの完全一致のみ）。たとえば
-「`git push` 単体は CONFIRM、`git push -f`/`--force` は DENY」は、通常の
-`git/write-confirm.yaml`（CONFIRM、args条件なし）と、`args.anyOf: ["-f", "--force"]`
-を付けた別の DENY リソース（`git/push-force-deny.yaml`）の2つに分けて書く。`-f` が
-付いていれば両方マッチし DENY が勝ち、付いていなければ DENY 側がマッチせず CONFIRM の
-ままになる（既存の strictest-wins がそのまま効く）。
+場合にのみマッチする。`to.args.noneOf` を付けると、指定したトークンを1つも含まない
+場合にのみマッチする（どちらも正規表現やglobは使わず、トークンの完全一致のみ）。
+
+どのコマンドも、判定するポリシーはちょうど1つでなければならない。同じ tool の2つのポリシーが
+あるコマンドに両方マッチし得る場合、`guard lint` はエラーにする。そのため
+「`git push` 単体は CONFIRM、`git push -f`/`--force` は DENY」は、条件が重ならない2つの
+リソースで書く。`push` のruleに `args.noneOf: ["-f", "--force"]` を付けた
+`git/write-confirm.yaml` と、`args.anyOf: ["-f", "--force"]` を付けた
+`git/push-force-deny.yaml` である。重なるポリシーがlintをすり抜けた場合は、`check` は
+strictest-wins（DENY > CONFIRM > ALLOW）にフォールバックする。
 
 ```yaml
 # .guard/policies/git/push-force-deny.yaml
@@ -375,8 +387,8 @@ spec:
 - 対象スコープは **Bash コマンドのみ**。
 - サブコマンド（`functions`）の判定は「先頭の `-` で始まらない最初の引数」というヒューリスティック。
   `git -C <path> push` のように値を取るフラグの直後の引数を誤って function とみなす場合がある。
-- マッチ条件の粒度は `functions` × `args.anyOf` まで（`to.label` は自由記述の
-  説明用フィールドであり、マッチングには関与しない）。`args.anyOf` はトークンの
+- マッチ条件の粒度は `functions` × `args.anyOf`/`args.noneOf` まで（`to.label` は自由記述の
+  説明用フィールドであり、マッチングには関与しない）。`args` はトークンの
   完全一致のみ（正規表現/glob不可、値を取るオプションの引数部分まではパースしない）。
   それ以上の複雑な判定が必要な場合は `options.customCheck` でスクリプト側に委譲する。
 - コマンド置換（`$(...)`）の中の呼び出しも AST walk で評価対象になるが、リテラルでない

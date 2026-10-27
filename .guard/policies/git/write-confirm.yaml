@@ -10,7 +10,16 @@ spec:
   rules:
     - to:
         label: write
-        functions: [add, commit, push, pull, merge]
+        functions: [add, commit, pull, merge]
       message:
         reason: "{cmd} is a write operation."
         next: "Confirm with the user before proceeding."
+
+    - to:
+        label: write
+        functions: [push]
+        args:
+          anyOf: ["-f", "--force"]
+      message:
+        reason: "{cmd} force-pushes and can overwrite remote history."
+        next: "Suggest a non-destructive alternative, or ask the user to run it themselves."
