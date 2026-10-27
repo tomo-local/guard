@@ -31,6 +31,9 @@ go.work.sum
 # guard check/record audit logs (local, not shared)
 .guard/logs/
 
+# guard report --format duckdb output: a generated binary database, not source
+*.duckdb
+
 # local build output
 bin/**
 

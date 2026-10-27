@@ -31,6 +31,11 @@ type CommandLog struct {
 	// Label carries the matched rule's policy.To.Label (free-text,
 	// purely descriptive -- see its doc comment), when set.
 	Label string `json:"label,omitempty"`
+	// Function is the engine's firstFunction heuristic (e.g. "push" for
+	// "git push -f"), empty for flat tools with no subcommand. Added for
+	// guard report's tool+function aggregation -- entries logged before
+	// this field existed simply omit it.
+	Function string `json:"function,omitempty"`
 }
 
 type CustomCheckLog struct {

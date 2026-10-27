@@ -16,6 +16,7 @@ policies you define ahead of time.
   - [`guard check`](#guard-check)
   - [`guard record`](#guard-record)
   - [`guard lint`](#guard-lint)
+  - [`guard report`](#guard-report)
 - [Configuration](#configuration)
 - [Writing Policies](#writing-policies)
   - [Matching on flags](#matching-on-flags-toargsanyof)
@@ -38,9 +39,8 @@ The policy format is a Kubernetes-style manifest modeled on
 so if you've written an Istio `AuthorizationPolicy` before, this will
 look familiar.
 
-`guard init` / `guard check` / `guard record` / `guard lint` are
-implemented. `guard report` is the only piece still pending (see
-`tmp/remaining-plan.md` if present).
+`guard init` / `guard check` / `guard record` / `guard lint` / `guard
+report` are all implemented.
 
 ## Features
 
@@ -66,7 +66,7 @@ implemented. `guard report` is the only piece still pending (see
   (`guard record` -> `.guard/logs/record.jsonl`) are recorded as JSON
   Lines, unsummarized.
 - **Configurable via env vars** (`GUARD_POLICIES_DIR`, `GUARD_LOG_PATH`,
-  `GUARD_RECORD_LOG_PATH`) so a distributed binary doesn't need
+  `GUARD_RECORD_LOG_PATH`, `GUARD_CONFIG_PATH`) so a distributed binary doesn't need
   per-invocation flags.
 
 ## Quick Start
@@ -96,7 +96,8 @@ guard check "git push --force"
 
 ### `guard init`
 
-Sets up `.guard/policies/` and `.guard/logs/` for a new project.
+Sets up `.guard/policies/`, `.guard/logs/`, and `.guard/config.yaml` for a
+new project.
 
 ```bash
 guard init
@@ -107,11 +108,22 @@ guard init
   into the binary via `go:embed`). If policies already exist there, it
   **never overwrites anything**.
 - Also creates `.guard/logs/` (the log output directory).
+- **Also sets up `.guard/config.yaml`** (this CLI's own project settings,
+  separate from the Bash policies), currently just whether to use `guard
+  report --format duckdb` and where its database file should live:
+  - If `-duckdb` and/or `-duckdb-path` are passed, that answer is saved
+    without asking anything -- for scripted/non-interactive setup.
+  - Otherwise, if `.guard/config.yaml` doesn't exist yet, it asks
+    interactively on stdin/stdout (`[y/N]`, then a path with a default).
+    An empty/EOF answer defaults to "no" (DuckDB stays disabled), so a
+    non-interactive stdin never hangs or accidentally opts in.
+  - If `.guard/config.yaml` already exists and neither flag was passed,
+    it's left untouched -- re-running `guard init` doesn't re-ask.
 - **Never writes to `.claude/settings.json` automatically** (to avoid
   clobbering existing configuration) -- it just prints the hook JSON
   snippet to add yourself.
-- `-rules`/`-log` resolve the same way as `guard check`/`guard lint` (see
-  [Configuration](#configuration) below).
+- `-rules`/`-log`/`-config` resolve the same way as `guard check`/`guard
+  lint`/`guard report` (see [Configuration](#configuration) below).
 
 ### `guard check`
 
@@ -175,6 +187,45 @@ guard lint -rules ./some/other/dir
 Exit code: `0` = no errors (warnings may still be printed), `1` = at
 least one error.
 
+### `guard report`
+
+Aggregates `.guard/logs/check.jsonl` and `.guard/logs/record.jsonl` into a
+summary: action/mode counts, per-tool breakdown, which `tool`+subcommand
+combinations trigger DENY/CONFIRM most often, `options.customCheck`
+run/timeout/override counts, a daily timeline, and how many recorded
+commands were interrupted.
+
+```bash
+guard report                                 # self-contained HTML page to stdout (default)
+guard report --format md                     # Markdown summary to stdout
+guard report --format json --out report.json # machine-readable, written to a file
+guard report --format duckdb                 # load into the DB path set up by `guard init`
+```
+
+- **`-format`** is one of `md`, `json`, `html` (**default**), or `duckdb`.
+  `md`/`json`/`html` all render the same data, just differently: pick
+  whichever is convenient (`md` for pasting into a PR/chat, `json` for
+  scripting, `html` for a shareable, offline-viewable page with no
+  external requests). All three print to stdout when `-out` is omitted,
+  or write to the given file when it's set.
+- `-format duckdb` requires the `duckdb` CLI on PATH (e.g. `brew install
+  duckdb`) and a database path -- from `-out` if given, otherwise from
+  `.guard/config.yaml`'s `duckdb.path` (set up by `guard init`; see
+  below). It (re)builds `checks`/`records` tables in that database file
+  from the current JSONL content -- a full reload every run, not an
+  incremental append -- and prints a month x action count summary that
+  the database itself rendered. The `.duckdb` file is left behind for
+  you to run your own SQL against afterwards (`duckdb <path>`); guard
+  doesn't try to be the only way to query it.
+- `-log`/`-record-log`/`-config` resolve the same way as the other
+  commands (`-flag` > env var > default; see [Configuration](#configuration)).
+- Neither log needs to exist yet -- a missing or empty log produces a
+  report that says so, not an error (exit code is always `0` except on a
+  usage/runtime error, e.g. an unknown `-format`, or `-format duckdb`
+  with no `-out` and no configured path, or the `duckdb` CLI missing).
+- No date-range or tool/action filtering in v1; see [Known Limitations
+  (v1)](#known-limitations-v1).
+
 ## Configuration
 
 `-rules`/`-log` can also be overridden via environment variables, for
@@ -184,8 +235,9 @@ flags every time. Precedence is **`-flag` > env var > built-in default**.
 | Env var | Applies to | Flag | Default |
 |---|---|---|---|
 | `GUARD_POLICIES_DIR` | `init`/`check`/`lint` | `-rules` | `.guard/policies` |
-| `GUARD_LOG_PATH` | `init`/`check` | `-log` | `.guard/logs/check.jsonl` (`init` creates this path's parent directory) |
-| `GUARD_RECORD_LOG_PATH` | `record` | `-log` | `.guard/logs/record.jsonl` |
+| `GUARD_LOG_PATH` | `init`/`check`/`report` | `-log` | `.guard/logs/check.jsonl` (`init` creates this path's parent directory) |
+| `GUARD_RECORD_LOG_PATH` | `record`/`report` | `-log` (`record`) / `-record-log` (`report`) | `.guard/logs/record.jsonl` |
+| `GUARD_CONFIG_PATH` | `init`/`report` | `-config` | `.guard/config.yaml` (`init` writes it; `report` only reads it) |
 
 ```bash
 GUARD_POLICIES_DIR=./some/other/dir guard lint
@@ -352,6 +404,15 @@ is used as-is.
   too, but non-literal arguments (variable expansions, etc.) are rendered
   back as raw shell syntax, so they never match a `functions` list and
   fall through to the catch-all/default.
+- `guard report` has no date-range or tool/action filtering, and doesn't
+  join `check.jsonl`/`record.jsonl` entries together (Claude Code's
+  `PreToolUse` payload carries no `tool_use_id`, so there's no reliable
+  key to join on) -- each log is aggregated independently. The same
+  applies to `-format duckdb`'s `checks`/`records` tables: there's no
+  shared key to `JOIN` them on either.
+- The `function` field on `check.jsonl`'s `commands[]` (used for `guard
+  report`'s tool+function aggregation) only exists on entries logged
+  after it was introduced; older log lines simply omit it.
 
 ## Development
 
