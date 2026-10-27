@@ -183,7 +183,7 @@ checks:
 | Severity | Check |
 |---|---|
 | Error | `apiVersion` != `"ai-guard/v1"` |
-| Error | `kind` != `"CommandGatePolicy"` |
+| Error | `kind` is not a known kind (`CommandGatePolicy`, or `GuardManifest` -- see [manifest-schema.md](manifest-schema.md)); the file is otherwise ignored |
 | Error | `metadata.name` empty |
 | Error | `spec.target.module` != `"permission"` |
 | Error | `spec.target.tool` empty |
