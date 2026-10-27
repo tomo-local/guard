@@ -181,7 +181,10 @@ Register it as `PostToolUse` -> `guard record`; see
 ### `guard lint`
 
 Validates every policy manifest under `.guard/policies/` (subdirectories
-are read recursively too).
+are read recursively too). Every problem is reported in one run, grouped by
+file with a summary line; a file that fails to parse is reported like any
+other issue. Output is colored on a terminal (`-color always|never|auto`,
+and `NO_COLOR` is honored).
 
 ```bash
 guard lint

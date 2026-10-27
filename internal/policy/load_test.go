@@ -96,3 +96,31 @@ func TestLoadDir_MissingDirIsEmpty(t *testing.T) {
 		t.Fatalf("expected an empty result and no error, got %v, %v", got, err)
 	}
 }
+
+func TestLoadDirForLint_BadYAMLBecomesAnIssue(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "allow.yaml", gateYAML)
+	writeFile(t, dir, "bad1.yaml", "kind: [unterminated\n")
+	writeFile(t, dir, "bad2.yaml", "kind: CommandGatePolicy\nspec: 3\n")
+
+	got, err := LoadDirForLint(dir, Deps{})
+	if err != nil {
+		t.Fatalf("lint load must not abort on a broken file: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected all 3 files, got %d", len(got))
+	}
+	broken := 0
+	for _, p := range got {
+		if _, ok := p.(CommandEvaluator); ok {
+			continue
+		}
+		if !HasErrors(p.Lint()) {
+			t.Fatalf("expected an error for %s", p.Meta().Source)
+		}
+		broken++
+	}
+	if broken != 2 {
+		t.Fatalf("expected 2 broken placeholders, got %d", broken)
+	}
+}

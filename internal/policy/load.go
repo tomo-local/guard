@@ -22,6 +22,18 @@ import (
 // that only reports itself in Lint: it never takes part in evaluation, and
 // one stray manifest does not stop the rest of the directory from working.
 func LoadDir(dir string, deps Deps) ([]Policy, error) {
+	return loadDir(dir, deps, false)
+}
+
+// LoadDirForLint is LoadDir for `guard lint`: a file that can't be read or
+// parsed becomes a placeholder that reports the failure through Lint, so
+// every broken file is reported in one run instead of the first one
+// aborting the load.
+func LoadDirForLint(dir string, deps Deps) ([]Policy, error) {
+	return loadDir(dir, deps, true)
+}
+
+func loadDir(dir string, deps Deps, lenient bool) ([]Policy, error) {
 	var paths []string
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -49,7 +61,10 @@ func LoadDir(dir string, deps Deps) ([]Policy, error) {
 	for _, p := range paths {
 		pol, err := LoadFile(p, deps)
 		if err != nil {
-			return nil, err
+			if !lenient {
+				return nil, err
+			}
+			pol = &brokenPolicy{source: p, err: err}
 		}
 		policies = append(policies, pol)
 	}
@@ -99,5 +114,26 @@ func (p *unknownKindPolicy) Lint() []Issue {
 	} else {
 		c.Errorf("kind: unknown kind %q (known kinds: %s)", p.kind, strings.Join(KindNames(), ", "))
 	}
+	return c.Issues()
+}
+
+// brokenPolicy stands in for a manifest that couldn't be read or parsed.
+// Only LoadDirForLint produces it.
+type brokenPolicy struct {
+	source string
+	err    error
+}
+
+func (p *brokenPolicy) Meta() Meta { return Meta{Source: p.source} }
+
+func (p *brokenPolicy) Lint() []Issue {
+	c := NewIssueCollector(p.source)
+	// The file path is already the issue's group header; drop it from the
+	// message ("parse policy file "x.yaml": ...").
+	msg := p.err.Error()
+	if _, rest, ok := strings.Cut(msg, fmt.Sprintf("%q: ", p.source)); ok {
+		msg = rest
+	}
+	c.Errorf("%s", msg)
 	return c.Issues()
 }

@@ -161,6 +161,9 @@ echo '{"tool_name":"Bash","tool_input":{"command":"echo hi"},"tool_response":{"s
 ### `guard lint`
 
 `.guard/policies/` 配下の全ポリシーマニフェスト（サブディレクトリも再帰的に読み込む）を検証する。
+問題はすべて1回の実行でまとめて報告され、ファイルごとにグループ化されて最後にサマリー行が付く。
+パースに失敗したファイルも、他の問題と同じように報告される。出力はターミナルでは色付けされる
+（`-color always|never|auto`。`NO_COLOR` も尊重する）。
 
 ```bash
 guard lint
