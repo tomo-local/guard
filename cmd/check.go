@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"ai-guard-tracker/internal/agent"
 	"ai-guard-tracker/internal/engine"
-	"ai-guard-tracker/internal/hookproto"
 	"ai-guard-tracker/internal/policy"
 	"ai-guard-tracker/internal/sidecar"
 )
@@ -87,7 +87,7 @@ func (c *Cmd) runCheckHook(evaluator *engine.Evaluator, loadErr error, logDir st
 		return fmt.Errorf("read stdin: %w", err)
 	}
 
-	var in hookproto.PreToolUseInput
+	var in agent.PreToolUseInput
 	if err := json.Unmarshal(data, &in); err != nil || in.ToolName == "" {
 		return fmt.Errorf("no command given and stdin is not a recognizable PreToolUse hook payload\n%s", checkUsage)
 	}
@@ -99,7 +99,7 @@ func (c *Cmd) runCheckHook(evaluator *engine.Evaluator, loadErr error, logDir st
 		return nil
 	}
 
-	var bashInput hookproto.BashToolInput
+	var bashInput agent.BashToolInput
 	if err := json.Unmarshal(in.ToolInput, &bashInput); err != nil {
 		fmt.Fprint(c.Stdout, "{}")
 		return nil
@@ -120,8 +120,8 @@ func (c *Cmd) runCheckHook(evaluator *engine.Evaluator, loadErr error, logDir st
 		fmt.Fprintf(c.Stderr, "warning: failed to write check log: %v\n", err)
 	}
 
-	out := hookproto.PreToolUseOutput{
-		HookSpecificOutput: &hookproto.PreToolUseHookSpecificOutput{
+	out := agent.PreToolUseOutput{
+		HookSpecificOutput: &agent.PreToolUseHookSpecificOutput{
 			HookEventName:            "PreToolUse",
 			PermissionDecision:       mapPermissionDecision(final.Action),
 			PermissionDecisionReason: combineReasonNext(final.Reason, final.Next),
@@ -136,11 +136,11 @@ func (c *Cmd) runCheckHook(evaluator *engine.Evaluator, loadErr error, logDir st
 func mapPermissionDecision(a policy.Action) string {
 	switch a {
 	case policy.ActionAllow:
-		return hookproto.PermissionAllow
+		return agent.PermissionAllow
 	case policy.ActionDeny:
-		return hookproto.PermissionDeny
+		return agent.PermissionDeny
 	default:
-		return hookproto.PermissionAsk
+		return agent.PermissionAsk
 	}
 }
 

@@ -1,6 +1,6 @@
-// Package hookproto defines the JSON shapes Claude Code sends to and
-// expects from PreToolUse/PostToolUse hook commands.
-package hookproto
+// Package agent defines the JSON shapes AI coding agents (Claude Code today)
+// send to and expect from PreToolUse/PostToolUse hook commands.
+package agent
 
 import "encoding/json"
 

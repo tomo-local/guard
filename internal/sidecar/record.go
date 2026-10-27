@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"ai-guard-tracker/internal/hookproto"
+	"ai-guard-tracker/internal/agent"
 )
 
 // RecordLogEntry is one JSONL record in the record log: the Bash command
@@ -27,7 +27,7 @@ type RecordLogEntry struct {
 // nothing to record: the payload isn't recognizable, or ToolName isn't
 // "Bash" (guard's scope is Bash only, per the PreToolUse side too).
 func BuildRecordLogEntry(raw []byte) (entry RecordLogEntry, ok bool) {
-	var in hookproto.PostToolUseInput
+	var in agent.PostToolUseInput
 	if err := json.Unmarshal(raw, &in); err != nil || in.ToolName == "" {
 		return RecordLogEntry{}, false
 	}
@@ -35,10 +35,10 @@ func BuildRecordLogEntry(raw []byte) (entry RecordLogEntry, ok bool) {
 		return RecordLogEntry{}, false
 	}
 
-	var bashInput hookproto.BashToolInput
+	var bashInput agent.BashToolInput
 	_ = json.Unmarshal(in.ToolInput, &bashInput)
 
-	var resp hookproto.BashToolResponse
+	var resp agent.BashToolResponse
 	_ = json.Unmarshal(in.ToolResponse, &resp)
 
 	entry = RecordLogEntry{
