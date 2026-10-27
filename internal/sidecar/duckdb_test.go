@@ -129,6 +129,29 @@ func TestDuckDBCLIStore_PathWithSingleQuoteIsEscaped(t *testing.T) {
 	}
 }
 
+func TestDuckDBCLIStore_CreatesMissingParentDirOfDBPath(t *testing.T) {
+	requireDuckDB(t)
+	dir := t.TempDir()
+	checkPath := filepath.Join(dir, "check.jsonl")
+	writeJSONL(t, checkPath, []any{CheckLogEntry{Action: "ALLOW"}})
+
+	// dbPath's parent ("reports/") is never created by anything in this
+	// test -- Sync itself must create it, since guard init -duckdb-path
+	// can save an arbitrary, not-yet-existing path to config.yaml.
+	dbPath := filepath.Join(dir, "reports", "guard.duckdb")
+
+	result, err := DuckDBCLIStore{}.Sync(checkPath, filepath.Join(dir, "record.jsonl"), dbPath)
+	if err != nil {
+		t.Fatalf("Sync with a missing parent directory should create it, got error: %v", err)
+	}
+	if !result.ChecksLoaded {
+		t.Fatalf("expected ChecksLoaded=true")
+	}
+	if !nonEmptyFile(dbPath) {
+		t.Fatalf("expected a database file at %s", dbPath)
+	}
+}
+
 func mustParseTime(t *testing.T, s string) time.Time {
 	t.Helper()
 	parsed, err := time.Parse(time.RFC3339, s)

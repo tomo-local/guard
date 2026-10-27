@@ -1,13 +1,14 @@
 package sidecar
 
 import (
-	"bytes"
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"ai-guard-tracker/internal/procexec"
 )
 
 // duckDBTimeout bounds how long the external duckdb CLI may run for one
@@ -39,7 +40,8 @@ type DuckDBStore interface {
 // driver requires CGO, which would complicate this CLI's
 // cross-compilation and Homebrew formula build, so this mirrors the
 // existing options.customCheck pattern of delegating to an external
-// process instead.
+// process instead (both now share the exec/timeout/capture plumbing via
+// internal/procexec).
 type DuckDBCLIStore struct{}
 
 // Sync (re)builds dbPath's `checks`/`records` tables from
@@ -52,6 +54,15 @@ type DuckDBCLIStore struct{}
 func (DuckDBCLIStore) Sync(checkLogPath, recordLogPath, dbPath string) (SyncDuckDBResult, error) {
 	if _, err := exec.LookPath("duckdb"); err != nil {
 		return SyncDuckDBResult{}, fmt.Errorf("duckdb CLI not found on PATH -- install it first (e.g. `brew install duckdb`; see https://duckdb.org/docs/installation/)")
+	}
+
+	// dbPath may be a custom, not-yet-created location (e.g. guard init
+	// -duckdb-path reports/guard.duckdb): the duckdb CLI itself creates
+	// the database file, but not its parent directory.
+	if dir := filepath.Dir(dbPath); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return SyncDuckDBResult{}, fmt.Errorf("create directory for %q: %w", dbPath, err)
+		}
 	}
 
 	var result SyncDuckDBResult
@@ -88,19 +99,18 @@ ORDER BY month, action;`)
 		fmt.Fprintln(&script, "SELECT * FROM monthly_summary;")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), duckDBTimeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "duckdb", "-no-agent", dbPath)
-	cmd.Stdin = strings.NewReader(script.String())
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return SyncDuckDBResult{}, fmt.Errorf("duckdb sync failed: %w\n%s", err, stderr.String())
+	run := procexec.Run(duckDBTimeout, "duckdb", []string{"-no-agent", dbPath}, strings.NewReader(script.String()))
+	if run.TimedOut {
+		return SyncDuckDBResult{}, fmt.Errorf("duckdb sync timed out after %s", duckDBTimeout)
+	}
+	if run.RunErr != nil {
+		return SyncDuckDBResult{}, fmt.Errorf("duckdb sync failed: %w\n%s", run.RunErr, run.Stderr)
+	}
+	if run.ExitCode != 0 {
+		return SyncDuckDBResult{}, fmt.Errorf("duckdb sync failed (exit %d):\n%s", run.ExitCode, run.Stderr)
 	}
 
-	result.MonthlySummary = stdout.String()
+	result.MonthlySummary = run.Stdout
 	return result, nil
 }
 

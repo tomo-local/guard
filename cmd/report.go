@@ -44,7 +44,8 @@ Options:
   -format string        "md", "json", "html" (default), or "duckdb"
   -out string            output file path. For md/json/html, printed to stdout when
                           omitted. For duckdb, falls back to the path saved by "guard
-                          init" in -config when omitted; required if that's also unset.
+                          init -duckdb" in -config when omitted (only if enabled there);
+                          required otherwise.
 
 -format duckdb loads check.jsonl/record.jsonl into a DuckDB database file
 (full reload every run) and prints a month x action count summary. Requires
@@ -103,14 +104,20 @@ func (c *Cmd) RunReport(args []string) error {
 func (c *Cmd) runReportDuckDB(logPath, recordLogPath, configPath, out string) error {
 	dbPath := out
 	if dbPath == "" {
+		// Only fall back to the configured path when DuckDB is actually
+		// enabled there -- config.yaml is documented as safe to hand-edit,
+		// so a user who sets `enabled: false` but leaves a stale `path:`
+		// behind must not have -format duckdb quietly ignore that.
 		cfg, err := config.Load(configPath)
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
 		}
-		dbPath = cfg.DuckDB.Path
+		if cfg.DuckDB.Enabled {
+			dbPath = cfg.DuckDB.Path
+		}
 	}
 	if dbPath == "" {
-		fmt.Fprint(c.Stderr, reportUsage)
+		fmt.Fprintf(c.Stderr, "no DuckDB database path: pass -out <path>, or run `guard init -duckdb` to set one up for this project (-config %s).\n", configPath)
 		return &ExitError{Code: 1}
 	}
 
@@ -119,12 +126,22 @@ func (c *Cmd) runReportDuckDB(logPath, recordLogPath, configPath, out string) er
 		return err
 	}
 	fmt.Fprintf(c.Stdout, "database written to %s\n", dbPath)
-	if !result.ChecksLoaded {
-		fmt.Fprintln(c.Stdout, "check.jsonl is missing or empty -- nothing to summarize yet.")
+
+	if result.ChecksLoaded {
+		fmt.Fprintln(c.Stdout, "checks table loaded from check.jsonl.")
 	} else {
+		fmt.Fprintln(c.Stdout, "check.jsonl is missing or empty -- no checks table created.")
+	}
+	if result.RecordsLoaded {
+		fmt.Fprintln(c.Stdout, "records table loaded from record.jsonl.")
+	} else {
+		fmt.Fprintln(c.Stdout, "record.jsonl is missing or empty -- no records table created.")
+	}
+	if result.ChecksLoaded {
 		fmt.Fprintln(c.Stdout, "\nMonthly summary (action counts):")
 		fmt.Fprint(c.Stdout, result.MonthlySummary)
 	}
+
 	fmt.Fprintf(c.Stdout, "\nOpen it yourself for ad-hoc SQL: duckdb %s\n", dbPath)
 	return nil
 }

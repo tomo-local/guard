@@ -3,6 +3,7 @@ package cmd
 import (
 	"flag"
 	"fmt"
+	"os/exec"
 
 	"ai-guard-tracker/internal/config"
 	"ai-guard-tracker/internal/setup"
@@ -74,12 +75,15 @@ func (c *Cmd) RunInit(args []string) error {
 		fmt.Fprintf(c.Stdout, "policies directory seeded with %d starter polic%s: %s\n", res.SeededPolicyCount, plural(res.SeededPolicyCount), res.PoliciesDir)
 	}
 
-	if err := c.setupDuckDBConfig(*configPath, duckdbFlagSet, *duckdbFlag, duckdbPathFlagSet, *duckdbPathFlag); err != nil {
-		return err
-	}
+	// Printed regardless of setupDuckDBConfig's outcome below: core setup
+	// (policies/logs) already succeeded by this point, and the hook
+	// snippet is the one step guard init can't do for the user, so a
+	// DuckDB config-save failure must never cause it to go unprinted.
+	duckdbErr := c.setupDuckDBConfig(*configPath, duckdbFlagSet, *duckdbFlag, duckdbPathFlagSet, *duckdbPathFlag)
 
 	fmt.Fprint(c.Stdout, setup.HookSettingsSnippet)
-	return nil
+
+	return duckdbErr
 }
 
 // setupDuckDBConfig decides the project's DuckDB setting and, unless it's
@@ -112,6 +116,14 @@ func (c *Cmd) setupDuckDBConfig(configPath string, duckdbFlagSet, duckdbFlag, du
 	}
 	if duckdb.Enabled {
 		fmt.Fprintf(c.Stdout, "config written: %s (duckdb enabled, path=%s)\n", configPath, duckdb.Path)
+		// Checked here, not just left to guard report's own LookPath
+		// check, so a missing binary surfaces immediately at setup time
+		// instead of silently waiting until the first "guard report
+		// --format duckdb" run. Not fatal -- the CLI may well be
+		// installed later, so the config is still saved as asked.
+		if _, err := exec.LookPath("duckdb"); err != nil {
+			fmt.Fprintln(c.Stderr, "warning: duckdb CLI not found on PATH -- install it before running `guard report --format duckdb` (e.g. `brew install duckdb`)")
+		}
 	} else {
 		fmt.Fprintf(c.Stdout, "config written: %s (duckdb disabled)\n", configPath)
 	}
