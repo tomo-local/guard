@@ -25,5 +25,13 @@ func Lint(policies []policy.Policy) []policy.Issue {
 		}
 		issues = append(issues, kind.LintSet(byKind[name])...)
 	}
+
+	// Checks that reach across kinds (e.g. a reference to something another
+	// kind defines) see every policy.
+	for _, name := range policy.KindNames() {
+		if across := policy.Kinds[name].LintAcross; across != nil {
+			issues = append(issues, across(policies)...)
+		}
+	}
 	return issues
 }

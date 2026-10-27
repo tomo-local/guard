@@ -99,6 +99,18 @@ type Deps struct {
 	// Repo tells which git repository and branch commands act on. Nil means
 	// unknown: rules with a `to.branch` condition then never match.
 	Repo RepoInfo
+	// DB maps a database connection (host, database) to the names of the
+	// environments the project's db/connections.yml puts it in. Nil means no
+	// environments are defined: rules with a `to.environment` condition then
+	// never match.
+	DB DBEnvironments
+}
+
+// DBEnvironments is the port through which policies ask which environments
+// (production, staging, ...) a database connection belongs to. A host that
+// the project doesn't describe belongs to none.
+type DBEnvironments interface {
+	Environments(host, database string) []string
 }
 
 // RepoInfo is the port through which policies learn about the git

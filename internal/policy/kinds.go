@@ -11,12 +11,19 @@ type Kind struct {
 	// LintSet reports problems that span several policies of this kind
 	// (e.g. duplicate match conditions). May be nil.
 	LintSet func(policies []Policy) []Issue
+	// LintAcross reports problems that span this kind and other kinds,
+	// given every loaded policy (e.g. a reference to something another kind
+	// defines). May be nil.
+	LintAcross func(all []Policy) []Issue
 }
 
 // Kinds maps a manifest's `kind:` value to its Kind.
 var Kinds = map[string]Kind{
 	KindCommandGate:   {New: newCommandGate, LintSet: lintCommandGateSet},
 	KindGuardManifest: {New: newGuardManifest, LintSet: lintManifestSet},
+
+	KindGuardDBConnections: {New: newGuardDBConnections, LintSet: lintDBConnectionsSet},
+	KindGuardDBPolicy:      {New: newGuardDBPolicy, LintSet: lintDBPolicySet, LintAcross: lintDBPolicyRefs},
 }
 
 // KindNames returns the registered kind names in sorted order.

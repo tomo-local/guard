@@ -1,0 +1,32 @@
+apiVersion: ai-guard/v1
+kind: GuardDBPolicy
+metadata:
+  name: db-policy
+spec:
+  target:
+    clients: [psql, mysql]
+    action: CONFIRM          # used by rules that don't set their own action
+  rules:
+    - to:
+        label: production
+        environment:
+          anyOf: [production]
+      action: DENY
+      message:
+        reason: "{cmd} connects to a production database."
+        next: "Ask the user to run it themselves."
+    - to:
+        label: staging
+        environment:
+          anyOf: [staging]
+      message:
+        reason: "{cmd} connects to a staging database."
+        next: "Confirm with the user before proceeding."
+    # Connections that belong to no environment above (and aren't local).
+    - to:
+        label: unknown-host
+        environment:
+          noneOf: [production, staging, local]
+      message:
+        reason: "{cmd} connects to a database that is not in .guard/db/connections.yml."
+        next: "Add the host to connections.yml, or confirm with the user."

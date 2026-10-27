@@ -1,0 +1,15 @@
+apiVersion: ai-guard/v1
+kind: GuardDBConnections
+metadata:
+  name: connections
+spec:
+  # Which environment a database connection belongs to, by the host and/or
+  # database a psql / mysql command connects to. Patterns follow path.Match
+  # and compare case-insensitively. Replace the example hosts with your own.
+  environments:
+    - name: production
+      hosts: ["*.prod.example.com"]
+    - name: staging
+      hosts: ["*.staging.example.com"]
+    - name: local
+      hosts: [localhost, 127.0.0.1]

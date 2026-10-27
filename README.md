@@ -251,6 +251,7 @@ flags every time. Precedence is **`-flag` > env var > built-in default**.
 | `GUARD_RECORD_LOG_PATH` | `init`/`record`/`report` | `-log` (`record`) / `-record-log` (`init`, `report`) | `.guard/logs/record` (one `YYYY-MM-DD.jsonl` per UTC day) |
 | `GUARD_CONFIG_PATH` | `init`/`report` | `-config` | `.guard/config.yaml` (`init` writes it; `report` only reads it) |
 | `GUARD_MANIFEST_PATH` | `check`/`lint` | `-manifest` | `.guard/manifest.yaml` (optional; see [GuardManifest](docs/manifest-schema.md)) |
+| `GUARD_DB_DIR` | `check`/`lint` | `-db` | `.guard/db` (optional `connections.yml` + `policy.yml`; see [Database files](docs/db-schema.md)) |
 
 ```bash
 GUARD_POLICIES_DIR=./some/other/dir guard lint
@@ -416,6 +417,29 @@ spec:
         branch: { anyOf: [protected] }
 ```
 
+### Database clients (`.guard/db/`)
+
+`psql` and `mysql` are governed by two files in `.guard/db/`:
+`connections.yml` defines environments (production, staging, ...) by host
+and database, and `policy.yml` decides what to do with a command by the
+environment of the connection it opens. See [Database files](docs/db-schema.md).
+
+```yaml
+# .guard/db/connections.yml
+spec:
+  environments:
+    - name: production
+      hosts: ["*.prod.example.com"]
+```
+
+```yaml
+# .guard/db/policy.yml
+spec:
+  rules:
+    - to: { environment: { anyOf: [production] } }
+      action: DENY
+```
+
 ### Custom checks (`options.customCheck`)
 
 Mirrors Istio's `action: CUSTOM` (delegating authorization to an external
@@ -463,6 +487,9 @@ is used as-is.
   the command (a `git push` refspec, `git branch -d <name>`) or else the
   current branch. `git push --all/--mirror` and `git -C <path>` are not
   tracked. `sqlGate` in the manifest is read but not enforced yet.
+- Database connections (`.guard/db/`) are read from the command line only
+  (`psql`/`mysql` flags, URIs, the positional database name), not from
+  environment variables, `~/.pgpass`, `-f` files or standard input.
 - Scope is **Bash commands only**.
 - Subcommand (`functions`) detection is a heuristic: "the first argument
   that doesn't start with `-`". `git -C <path> push` mistakes `<path>`

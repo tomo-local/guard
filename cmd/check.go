@@ -22,6 +22,7 @@ Options:
   -rules string   policy directory to load (default ".guard/policies", env GUARD_POLICIES_DIR)
   -log string     check decision log directory, one file per UTC day (default ".guard/logs/check", env GUARD_LOG_PATH)
   -manifest string  project manifest, used when no policy matches (default ".guard/manifest.yaml", env GUARD_MANIFEST_PATH)
+  -db string      database connections.yml and policy.yml directory (default ".guard/db", env GUARD_DB_DIR)
 
 Precedence for both: -flag > env var > built-in default.
 
@@ -38,12 +39,13 @@ func (c *Cmd) RunCheck(args []string) error {
 	rulesDir := fs.String("rules", defaultPoliciesDir(), "policy directory to load (env GUARD_POLICIES_DIR)")
 	logDir := fs.String("log", defaultLogDir(), "check decision log directory (env GUARD_LOG_PATH)")
 	manifest := fs.String("manifest", defaultManifestPath(), "project manifest (env GUARD_MANIFEST_PATH)")
+	dbDir := fs.String("db", defaultDBDir(), "database connections and policy directory (env GUARD_DB_DIR)")
 	fs.Usage = func() { fmt.Fprint(c.Stderr, checkUsage) }
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	policies, loadErr := loadPolicies(*rulesDir, *manifest, false)
+	policies, loadErr := loadPolicies(*rulesDir, *manifest, *dbDir, false)
 	evaluator := engine.NewEvaluator(policies)
 
 	if rest := fs.Args(); len(rest) > 0 {
