@@ -1,7 +1,6 @@
 package policy
 
 import (
-	"fmt"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -16,8 +15,9 @@ const KindGuardDBPolicy = "GuardDBPolicy"
 // (priority 0) and before the project manifest (priority 100).
 const dbPriority = 10
 
-// GuardDBPolicy decides what database clients (psql, mysql) may do, by the
-// environment of the connection they open (see GuardDBConnections).
+// GuardDBPolicy decides what database clients (psql, mysql) may run, by the
+// labels of the connection's environment (see GuardDBConnections) and the
+// keyword of each SQL statement.
 type GuardDBPolicy struct {
 	APIVersion string       `yaml:"apiVersion" validate:"eq=ai-guard/v1"`
 	Kind       string       `yaml:"kind" validate:"eq=GuardDBPolicy"`
@@ -46,12 +46,15 @@ type DBRule struct {
 	Message *Message `yaml:"message,omitempty"`
 }
 
+// DBTo is a rule's match condition, shaped like a CommandGatePolicy's: Labels
+// restricts the rule to connections whose environment carries one of them
+// (omit it for every connection), Functions lists SQL statement keywords
+// (omit it to make the rule a catch-all for every statement).
 type DBTo struct {
 	// Label is descriptive only.
-	Label string `yaml:"label,omitempty"`
-	// Environment matches on the names of the environments the connection
-	// belongs to (anyOf: at least one of them; noneOf: none of them).
-	Environment *LabelsMatch `yaml:"environment" validate:"required"`
+	Label     string   `yaml:"label,omitempty"`
+	Labels    []string `yaml:"labels,omitempty" validate:"omitempty,dive,required"`
+	Functions []string `yaml:"functions,omitempty" validate:"omitempty,dive,required"`
 }
 
 func newGuardDBPolicy(data []byte, source string, deps Deps) (Policy, error) {
@@ -79,66 +82,34 @@ func (p *GuardDBPolicy) clients() []string {
 	return p.Spec.Target.Clients
 }
 
-// Evaluate answers for psql/mysql commands once the connection's
-// environments are known. When several rules match, the strictest action
-// wins (the first on a tie). Without defined environments no rule matches.
-func (p *GuardDBPolicy) Evaluate(cmd shellcmd.SimpleCommand) (Verdict, bool) {
-	if !contains(p.clients(), cmd.Tool) || p.deps.DB == nil {
-		return Verdict{}, false
+func (p *GuardDBPolicy) sqlRules() []sqlRule {
+	rules := make([]sqlRule, len(p.Spec.Rules))
+	for i, r := range p.Spec.Rules {
+		rules[i] = sqlRule{Label: r.To.Label, Labels: r.To.Labels, Functions: r.To.Functions, Action: r.Action, Message: r.Message}
 	}
-	conn := connectionOf(cmd)
-	envs := p.deps.DB.Environments(conn.Host, conn.Database)
-
-	var best *DBRule
-	var bestAction Action
-	for i := range p.Spec.Rules {
-		r := &p.Spec.Rules[i]
-		if !environmentMatches(r.To.Environment, envs) {
-			continue
-		}
-		action := r.Action
-		if action == "" {
-			action = p.Spec.Target.Action
-		}
-		if action == "" {
-			action = ActionDeny
-		}
-		if best == nil || ActionRank(action) > ActionRank(bestAction) {
-			best, bestAction = r, action
-		}
-	}
-	if best == nil {
-		return Verdict{}, false
-	}
-
-	v := Verdict{Action: bestAction, Label: best.To.Label, Source: p.SourcePath}
-	if best.Message != nil {
-		v.Reason = renderMessageTemplate(best.Message.Reason, cmd)
-		v.Next = renderMessageTemplate(best.Message.Next, cmd)
-	}
-	if v.Reason == "" {
-		where := conn.Host
-		if where == "" {
-			where = "the local database"
-		}
-		if len(envs) > 0 {
-			where += " (" + strings.Join(envs, ", ") + ")"
-		}
-		v.Reason = fmt.Sprintf("%s connects to %s.", cmd.String(), where)
-	}
-	if v.Next == "" {
-		v.Next = "Confirm with the user before running it against this database."
-	}
-	return v, true
+	return rules
 }
 
-// environmentMatches reports whether envs satisfies m: at least one AnyOf
-// name (when set) and none of the NoneOf names.
-func environmentMatches(m *LabelsMatch, envs []string) bool {
-	if m == nil {
-		return false
+// Evaluate answers for psql/mysql commands. Each SQL statement the command
+// runs is judged separately (see pickSQLRule) and the strictest result
+// stands for the command. Without connections.yml, a rule that names labels
+// never matches.
+func (p *GuardDBPolicy) Evaluate(cmd shellcmd.SimpleCommand) (Verdict, bool) {
+	if !contains(p.clients(), cmd.Tool) {
+		return Verdict{}, false
 	}
-	return (len(m.AnyOf) == 0 || intersects(envs, m.AnyOf)) && !intersects(envs, m.NoneOf)
+
+	var match DBMatch
+	if p.deps.DB != nil {
+		conn := connectionOf(cmd)
+		match = p.deps.DB.Match(conn.Host, conn.Database)
+	}
+
+	where := ""
+	if len(match.Environments) > 0 {
+		where = " on " + strings.Join(match.Environments, ", ")
+	}
+	return evaluateSQL(cmd, p.sqlRules(), p.Spec.Target.Action, match.Labels, p.SourcePath, where)
 }
 
 func (p *GuardDBPolicy) Lint() []Issue {
@@ -150,18 +121,14 @@ func (p *GuardDBPolicy) Lint() []Issue {
 			c.Errorf("spec.target.clients[%d]: unknown client %q (supported: %s)", i, cl, strings.Join(DBClients, ", "))
 		}
 	}
+
+	catchAll := false
 	for i, r := range p.Spec.Rules {
-		m := r.To.Environment
-		if m == nil {
-			continue
-		}
-		if len(m.AnyOf) == 0 && len(m.NoneOf) == 0 {
-			c.Errorf("spec.rules[%d].to.environment.anyOf: set anyOf or noneOf with at least 1 name", i)
-		}
-		for _, name := range m.AnyOf {
-			if contains(m.NoneOf, name) {
-				c.Errorf("spec.rules[%d].to.environment: %q is in both anyOf and noneOf, so the rule can never match", i, name)
+		if len(r.To.Functions) == 0 && len(r.To.Labels) == 0 {
+			if catchAll {
+				c.Warnf("spec.rules[%d] is a second rule for every statement on every connection; the earlier one makes it unreachable", i)
 			}
+			catchAll = true
 		}
 	}
 	return c.Issues()
@@ -187,8 +154,8 @@ func lintDBPolicySet(policies []Policy) []Issue {
 	return issues
 }
 
-// lintDBPolicyRefs checks that every environment name a DB policy refers to
-// is defined by the GuardDBConnections file.
+// lintDBPolicyRefs checks that every label a DB policy refers to is carried
+// by some environment in the GuardDBConnections file.
 func lintDBPolicyRefs(all []Policy) []Issue {
 	var conns *GuardDBConnections
 	var policies []*GuardDBPolicy
@@ -207,16 +174,12 @@ func lintDBPolicyRefs(all []Policy) []Issue {
 	for _, p := range policies {
 		c := NewIssueCollector(p.SourcePath)
 		for i, r := range p.Spec.Rules {
-			m := r.To.Environment
-			if m == nil {
-				continue
-			}
-			for _, name := range append(append([]string{}, m.AnyOf...), m.NoneOf...) {
+			for _, label := range r.To.Labels {
 				switch {
 				case conns == nil:
-					c.Errorf("spec.rules[%d].to.environment: %q is used but no GuardDBConnections file defines environments", i, name)
-				case !contains(conns.EnvironmentNames(), name):
-					c.Errorf("spec.rules[%d].to.environment: unknown environment %q (defined in %s: %s)", i, name, conns.SourcePath, strings.Join(conns.EnvironmentNames(), ", "))
+					c.Errorf("spec.rules[%d].to.labels: %q is used but no GuardDBConnections file defines environments", i, label)
+				case !contains(conns.LabelNames(), label):
+					c.Errorf("spec.rules[%d].to.labels: unknown label %q (defined in %s: %s)", i, label, conns.SourcePath, strings.Join(conns.LabelNames(), ", "))
 				}
 			}
 		}

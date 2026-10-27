@@ -32,15 +32,23 @@ func connectionOf(cmd shellcmd.SimpleCommand) dbConnection {
 	return dbConnection{}
 }
 
+// Long flags that take a value, so the value isn't taken for a positional.
+var psqlLongFlags = map[string]bool{
+	"--host": true, "--port": true, "--username": true, "--dbname": true,
+	"--file": true, "--command": true, "--output": true, "--set": true,
+	"--variable": true, "--field-separator": true, "--record-separator": true,
+	"--pset": true, "--log-file": true, "--table-attr": true,
+}
+
+var mysqlLongFlags = map[string]bool{
+	"--host": true, "--port": true, "--user": true, "--database": true,
+	"--socket": true, "--execute": true,
+}
+
 func psqlConnection(args []string) dbConnection {
 	// Flags that take a value (-c "sql", -f file, ...). Their values must not
 	// be mistaken for the positional database name.
-	values, positionals := splitFlags(args, "hpUdfcoFRPLTv", map[string]bool{
-		"--host": true, "--port": true, "--username": true, "--dbname": true,
-		"--file": true, "--command": true, "--output": true, "--set": true,
-		"--variable": true, "--field-separator": true, "--record-separator": true,
-		"--pset": true, "--log-file": true, "--table-attr": true,
-	})
+	values, _, positionals := splitFlags(args, "hpUdfcoFRPLTv", psqlLongFlags)
 
 	var conn dbConnection
 	spec := firstNonEmpty(values["-d"], values["--dbname"])
@@ -62,10 +70,7 @@ func psqlConnection(args []string) dbConnection {
 }
 
 func mysqlConnection(args []string) dbConnection {
-	values, positionals := splitFlags(args, "hPuDSe", map[string]bool{
-		"--host": true, "--port": true, "--user": true, "--database": true,
-		"--socket": true, "--execute": true,
-	})
+	values, _, positionals := splitFlags(args, "hPuDSe", mysqlLongFlags)
 
 	var conn dbConnection
 	if len(positionals) > 0 && strings.HasPrefix(positionals[0], "mysql://") {
@@ -88,16 +93,19 @@ func mysqlConnection(args []string) dbConnection {
 // shortValued lists the short flag letters that take a value (attached, as
 // in -hHOST, or as the next argument, and anywhere inside a cluster like
 // -Atc "sql"); longValued the long flags that do (--host=x or --host x).
-// Values are keyed by the flag as written, e.g. "-h" or "--host".
-func splitFlags(args []string, shortValued string, longValued map[string]bool) (map[string]string, []string) {
-	values := map[string]string{}
-	var positionals []string
+// Values are keyed by the flag as written, e.g. "-h" or "--host"; values
+// holds the last value of each flag, multi every value in order.
+func splitFlags(args []string, shortValued string, longValued map[string]bool) (values map[string]string, multi map[string][]string, positionals []string) {
+	values = map[string]string{}
+	multi = map[string][]string{}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "--":
-			positionals = append(positionals, args[i+1:]...)
-			return values, positionals
+			for _, rest := range args[i+1:] {
+				positionals = append(positionals, unshell(rest))
+			}
+			return values, multi, positionals
 		case strings.HasPrefix(a, "--"):
 			name, val, has := strings.Cut(a, "=")
 			if !longValued[name] {
@@ -107,7 +115,9 @@ func splitFlags(args []string, shortValued string, longValued map[string]bool) (
 				i++
 				val = args[i]
 			}
+			val = unshell(val)
 			values[name] = val
+			multi[name] = append(multi[name], val)
 		case strings.HasPrefix(a, "-") && len(a) > 1:
 			for k := 1; k < len(a); k++ {
 				if !strings.ContainsRune(shortValued, rune(a[k])) {
@@ -118,14 +128,31 @@ func splitFlags(args []string, shortValued string, longValued map[string]bool) (
 					i++
 					val = args[i]
 				}
+				val = unshell(val)
 				values["-"+string(a[k])] = val
+				multi["-"+string(a[k])] = append(multi["-"+string(a[k])], val)
 				break
 			}
 		default:
-			positionals = append(positionals, a)
+			positionals = append(positionals, unshell(a))
 		}
 	}
-	return values, positionals
+	return values, multi, positionals
+}
+
+// unshell removes one level of shell quoting from an argument as shellcmd
+// hands it over (it keeps the quotes of the command line): 'x' and "x" become
+// x, and inside double quotes \" \\ \$ and \` lose their backslash.
+func unshell(a string) string {
+	if len(a) >= 2 && a[0] == '\'' && a[len(a)-1] == '\'' {
+		return a[1 : len(a)-1]
+	}
+	if len(a) >= 2 && a[0] == '"' && a[len(a)-1] == '"' {
+		inner := a[1 : len(a)-1]
+		r := strings.NewReplacer(`\"`, `"`, `\\`, `\`, `\$`, `$`, "\\`", "`")
+		return r.Replace(inner)
+	}
+	return a
 }
 
 // uriConnection reads host and database from postgres:// or mysql:// URIs.

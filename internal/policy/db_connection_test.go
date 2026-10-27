@@ -27,6 +27,8 @@ func TestConnectionOf(t *testing.T) {
 		{"psql -h overrides uri host", []string{"psql", "-h", "other", "postgres://db.example.com/app"}, dbConnection{"other", "app"}},
 		{"psql -l takes no value", []string{"psql", "-l", "-h", "h"}, dbConnection{"h", ""}},
 		{"psql -X takes no value", []string{"psql", "-X", "-h", "h", "app"}, dbConnection{"h", "app"}},
+		{"psql quoted host and db", []string{"psql", "-h", "'db.example.com'", `"app"`}, dbConnection{"db.example.com", "app"}},
+		{"psql quoted --host=", []string{"psql", "--host='db.example.com'"}, dbConnection{"db.example.com", ""}},
 		{"psql nothing", []string{"psql"}, dbConnection{}},
 		{"psql after --", []string{"psql", "--", "app"}, dbConnection{"", "app"}},
 		// mysql
