@@ -1,38 +1,11 @@
 package policy
 
-// Action is the decision a policy resource applies to matching commands.
-//
-// ALLOW/DENY/CONFIRM are all valid directly in the YAML schema
-// (spec.action, when.action) as peer values of one enum -- there is no
-// "confirm modifier" layered on top of ALLOW. This is a deliberate
-// departure from Istio's binary ALLOW/DENY core: an earlier design kept
-// CONFIRM derived-only (ALLOW + a confirm flag), but that made
-// "DENY + confirm:true" a representable-but-contradictory combination
-// that had to be caught by a dedicated lint rule. Making CONFIRM a peer
-// enum value makes that combination impossible to write in the first
-// place, since a resource can only ever hold one Action.
-//
-// Action lives on Spec (one per file/resource), not per rule: the file
-// layout convention is "1 file = 1 tool + 1 action" (see the package
-// doc in loader.go and docs/policy-schema.md), so mixing e.g. an ALLOW
-// read rule and a CONFIRM write rule in the same resource means splitting
-// them into two files, same as ALLOW/DENY always required.
-type Action string
-
-const (
-	ActionAllow   Action = "ALLOW"
-	ActionDeny    Action = "DENY"
-	ActionConfirm Action = "CONFIRM"
-)
-
-// ValidActions lists every Action value that may appear directly in a
-// policy file (spec.action / when.action). Keep in sync with the
-// `oneof=...` validate tags on Spec.Action and When.Action below.
-var ValidActions = []Action{ActionAllow, ActionDeny, ActionConfirm}
+import "gopkg.in/yaml.v3"
 
 const (
 	APIVersion = "ai-guard/v1"
-	Kind       = "CommandGatePolicy"
+	// KindCommandGate is the `kind:` value of a CommandGatePolicy manifest.
+	KindCommandGate = "CommandGatePolicy"
 
 	// ModulePermission is the only module value supported in v1. It is kept
 	// as an explicit field so future modules (e.g. network, notification)
@@ -40,13 +13,15 @@ const (
 	ModulePermission = "permission"
 )
 
-// Policy is one CommandGatePolicy manifest, one file under .guard/policies/.
+// CommandGatePolicy is one CommandGatePolicy manifest, one file under
+// .guard/policies/. It is the policy kind that gates Bash commands by
+// tool/function/args.
 //
 // `validate` tags declare required-ness/enum constraints and are enforced
-// by validateStruct (see validate.go); lint.go only hand-codes checks that
+// by validateStruct (see validate.go); commandgate_lint.go only hand-codes checks that
 // can't be expressed as a single field constraint (e.g. detecting two
 // catch-all rules across a slice).
-type Policy struct {
+type CommandGatePolicy struct {
 	APIVersion string   `yaml:"apiVersion" validate:"eq=ai-guard/v1"`
 	Kind       string   `yaml:"kind" validate:"eq=CommandGatePolicy"`
 	Metadata   Metadata `yaml:"metadata"`
@@ -55,7 +30,39 @@ type Policy struct {
 	// SourcePath is set by the loader to the file this policy came from, for
 	// error messages and lint output. Not part of the YAML itself.
 	SourcePath string `yaml:"-" validate:"-"`
+
+	deps Deps
 }
+
+// NewCommandGate builds a CommandGatePolicy from an already-decoded spec.
+// The loader goes through newCommandGate (YAML); this is for callers that
+// hold a Spec directly, such as tests.
+func NewCommandGate(source string, spec Spec, deps Deps) *CommandGatePolicy {
+	return &CommandGatePolicy{
+		APIVersion: APIVersion,
+		Kind:       KindCommandGate,
+		SourcePath: source,
+		Spec:       spec,
+		deps:       deps,
+	}
+}
+
+func newCommandGate(data []byte, source string, deps Deps) (Policy, error) {
+	var p CommandGatePolicy
+	if err := yaml.Unmarshal(data, &p); err != nil {
+		return nil, err
+	}
+	p.SourcePath = source
+	p.deps = deps
+	return &p, nil
+}
+
+func (p *CommandGatePolicy) Meta() Meta {
+	return Meta{Name: p.Metadata.Name, Kind: KindCommandGate, Source: p.SourcePath}
+}
+
+// Priority is 0: individual tool policies are evaluated first.
+func (p *CommandGatePolicy) Priority() int { return 0 }
 
 type Metadata struct {
 	Name string `yaml:"name" validate:"required"`
@@ -137,5 +144,4 @@ type When struct {
 	Action Action `yaml:"action" validate:"oneof=ALLOW DENY CONFIRM"`
 }
 
-// DefaultAction is applied when no policy rule matches a given command.
-const DefaultAction = ActionConfirm
+var _ CommandEvaluator = (*CommandGatePolicy)(nil)

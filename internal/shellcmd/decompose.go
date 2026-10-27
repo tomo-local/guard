@@ -93,3 +93,24 @@ func fallbackSplit(raw string) []SimpleCommand {
 		Args: fields[1:],
 	}}
 }
+
+// Function treats the first argument that doesn't look like a flag as the
+// subcommand name. This is a heuristic: it misclassifies flags that take a
+// separate value (e.g. "git -C <path> push" sees "<path>" as the function),
+// a known v1 limitation documented in the README.
+func (c SimpleCommand) Function() string {
+	for _, a := range c.Args {
+		if a != "" && !strings.HasPrefix(a, "-") {
+			return a
+		}
+	}
+	return ""
+}
+
+// String renders the command back into a plain "<tool> <args...>" string.
+func (c SimpleCommand) String() string {
+	if len(c.Args) == 0 {
+		return c.Tool
+	}
+	return c.Tool + " " + strings.Join(c.Args, " ")
+}

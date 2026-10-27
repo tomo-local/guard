@@ -2,15 +2,38 @@ package engine
 
 import (
 	"testing"
+	"time"
 
 	"ai-guard-tracker/internal/policy"
+	"ai-guard-tracker/internal/procexec"
 	"ai-guard-tracker/internal/shellcmd"
 )
 
-func gitPolicy(action policy.Action, label string, functions []string, sourcePath string) policy.Policy {
-	return policy.Policy{
+// shRunner is a CustomCheckRunner that really runs the command through sh,
+// so customCheck tests keep exercising a real exit code.
+type shRunner struct{}
+
+func (shRunner) Run(timeout time.Duration, name string, args []string) policy.ProcResult {
+	r := procexec.Run(timeout, name, args, nil)
+	return policy.ProcResult{Stdout: r.Stdout, Stderr: r.Stderr, TimedOut: r.TimedOut, ExitCode: r.ExitCode, RunErr: r.RunErr}
+}
+
+func toPolicy(p policy.CommandGatePolicy) policy.Policy {
+	return policy.NewCommandGate(p.SourcePath, p.Spec, policy.Deps{Runner: shRunner{}})
+}
+
+func toPolicies(ps []policy.CommandGatePolicy) []policy.Policy {
+	out := make([]policy.Policy, len(ps))
+	for i, p := range ps {
+		out[i] = toPolicy(p)
+	}
+	return out
+}
+
+func gitPolicy(action policy.Action, label string, functions []string, sourcePath string) policy.CommandGatePolicy {
+	return policy.CommandGatePolicy{
 		APIVersion: policy.APIVersion,
-		Kind:       policy.Kind,
+		Kind:       policy.KindCommandGate,
 		SourcePath: sourcePath,
 		Spec: policy.Spec{
 			Target: policy.Target{Module: policy.ModulePermission, Tool: "git"},
@@ -23,13 +46,13 @@ func gitPolicy(action policy.Action, label string, functions []string, sourcePat
 }
 
 func samplePolicies() []policy.Policy {
-	return []policy.Policy{
+	return toPolicies([]policy.CommandGatePolicy{
 		gitPolicy(policy.ActionAllow, "read", []string{"log", "status"}, "git/read-allow.yaml"),
 		gitPolicy(policy.ActionConfirm, "write", []string{"add", "commit", "push"}, "git/write-confirm.yaml"),
 		gitPolicy(policy.ActionDeny, "destructive", []string{"reset", "clean"}, "git/destructive-deny.yaml"),
 		{
 			APIVersion: policy.APIVersion,
-			Kind:       policy.Kind,
+			Kind:       policy.KindCommandGate,
 			SourcePath: "rm/deny.yaml",
 			Spec: policy.Spec{
 				Target: policy.Target{Module: policy.ModulePermission, Tool: "rm"},
@@ -37,7 +60,7 @@ func samplePolicies() []policy.Policy {
 				Rules:  []policy.Rule{{To: policy.To{Label: "destructive"}}},
 			},
 		},
-	}
+	})
 }
 
 func TestEvaluateCommand(t *testing.T) {
@@ -70,10 +93,10 @@ func TestEvaluateCommand_ConfirmBeatsAllowWhenBothMatch(t *testing.T) {
 	// Two policies target the same tool/function but declare different
 	// actions. Since CONFIRM outranks ALLOW in severityRank, the CONFIRM
 	// resource should win the strictest-wins comparison for the whole group.
-	policies := []policy.Policy{
+	policies := toPolicies([]policy.CommandGatePolicy{
 		gitPolicy(policy.ActionAllow, "write", []string{"commit"}, "git/write-allow.yaml"),
 		gitPolicy(policy.ActionConfirm, "write", []string{"commit"}, "git/write-confirm.yaml"),
-	}
+	})
 	e := NewEvaluator(policies)
 
 	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"commit"}})
@@ -83,10 +106,10 @@ func TestEvaluateCommand_ConfirmBeatsAllowWhenBothMatch(t *testing.T) {
 }
 
 func TestEvaluateCommand_MessageCmdPlaceholder(t *testing.T) {
-	policies := []policy.Policy{
+	policies := toPolicies([]policy.CommandGatePolicy{
 		{
 			APIVersion: policy.APIVersion,
-			Kind:       policy.Kind,
+			Kind:       policy.KindCommandGate,
 			SourcePath: "git/write-confirm.yaml",
 			Spec: policy.Spec{
 				Target: policy.Target{Module: policy.ModulePermission, Tool: "git"},
@@ -102,7 +125,7 @@ func TestEvaluateCommand_MessageCmdPlaceholder(t *testing.T) {
 				},
 			},
 		},
-	}
+	})
 
 	e := NewEvaluator(policies)
 	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"add", "-A", "."}})
@@ -172,10 +195,10 @@ func TestEvaluateCommand_DefaultReasonMentionsCommand(t *testing.T) {
 	}
 }
 
-func pushForceDenyPolicy() policy.Policy {
-	return policy.Policy{
+func pushForceDenyPolicy() policy.CommandGatePolicy {
+	return policy.CommandGatePolicy{
 		APIVersion: policy.APIVersion,
-		Kind:       policy.Kind,
+		Kind:       policy.KindCommandGate,
 		SourcePath: "git/push-force-deny.yaml",
 		Spec: policy.Spec{
 			Target: policy.Target{Module: policy.ModulePermission, Tool: "git"},
@@ -192,7 +215,7 @@ func pushForceDenyPolicy() policy.Policy {
 }
 
 func TestEvaluateCommand_ArgsMatchDistinguishesForcePush(t *testing.T) {
-	policies := append(samplePolicies(), pushForceDenyPolicy())
+	policies := append(samplePolicies(), toPolicy(pushForceDenyPolicy()))
 	e := NewEvaluator(policies)
 
 	cases := []struct {
@@ -252,10 +275,10 @@ func TestEvaluateAll_DenyBeatsConfirm(t *testing.T) {
 }
 
 func TestEvaluateCommand_CustomCheckOverridesAction(t *testing.T) {
-	policies := []policy.Policy{
+	policies := toPolicies([]policy.CommandGatePolicy{
 		{
 			APIVersion: policy.APIVersion,
-			Kind:       policy.Kind,
+			Kind:       policy.KindCommandGate,
 			SourcePath: "git/push-custom-check.yaml",
 			Spec: policy.Spec{
 				Target: policy.Target{Module: policy.ModulePermission, Tool: "git"},
@@ -276,7 +299,7 @@ func TestEvaluateCommand_CustomCheckOverridesAction(t *testing.T) {
 				},
 			},
 		},
-	}
+	})
 
 	e := NewEvaluator(policies)
 	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}})
@@ -289,10 +312,10 @@ func TestEvaluateCommand_CustomCheckOverridesAction(t *testing.T) {
 }
 
 func TestEvaluateCommand_CustomCheckWhenCanOverrideToConfirm(t *testing.T) {
-	policies := []policy.Policy{
+	policies := toPolicies([]policy.CommandGatePolicy{
 		{
 			APIVersion: policy.APIVersion,
-			Kind:       policy.Kind,
+			Kind:       policy.KindCommandGate,
 			SourcePath: "git/push-custom-check.yaml",
 			Spec: policy.Spec{
 				Target: policy.Target{Module: policy.ModulePermission, Tool: "git"},
@@ -312,7 +335,7 @@ func TestEvaluateCommand_CustomCheckWhenCanOverrideToConfirm(t *testing.T) {
 				},
 			},
 		},
-	}
+	})
 
 	e := NewEvaluator(policies)
 	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}})
@@ -324,10 +347,10 @@ func TestEvaluateCommand_CustomCheckWhenCanOverrideToConfirm(t *testing.T) {
 func TestEvaluateCommand_CustomCheckOverrideBeatsBaseAction(t *testing.T) {
 	// A matched customCheck `when` entry always overrides the resource's
 	// plain Action, even downgrading it (here CONFIRM -> ALLOW).
-	policies := []policy.Policy{
+	policies := toPolicies([]policy.CommandGatePolicy{
 		{
 			APIVersion: policy.APIVersion,
-			Kind:       policy.Kind,
+			Kind:       policy.KindCommandGate,
 			SourcePath: "git/push-custom-check.yaml",
 			Spec: policy.Spec{
 				Target: policy.Target{Module: policy.ModulePermission, Tool: "git"},
@@ -347,7 +370,7 @@ func TestEvaluateCommand_CustomCheckOverrideBeatsBaseAction(t *testing.T) {
 				},
 			},
 		},
-	}
+	})
 
 	e := NewEvaluator(policies)
 	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}})
@@ -357,10 +380,10 @@ func TestEvaluateCommand_CustomCheckOverrideBeatsBaseAction(t *testing.T) {
 }
 
 func TestEvaluateCommand_CustomCheckNoWhenMatchKeepsBaseAction(t *testing.T) {
-	policies := []policy.Policy{
+	policies := toPolicies([]policy.CommandGatePolicy{
 		{
 			APIVersion: policy.APIVersion,
-			Kind:       policy.Kind,
+			Kind:       policy.KindCommandGate,
 			SourcePath: "git/push-custom-check.yaml",
 			Spec: policy.Spec{
 				Target: policy.Target{Module: policy.ModulePermission, Tool: "git"},
@@ -380,11 +403,138 @@ func TestEvaluateCommand_CustomCheckNoWhenMatchKeepsBaseAction(t *testing.T) {
 				},
 			},
 		},
-	}
+	})
 
 	e := NewEvaluator(policies)
 	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}})
 	if got.Action != policy.ActionConfirm {
 		t.Fatalf("expected the resource's own CONFIRM action to survive when no `when` entry matches, got %s", got.Action)
+	}
+}
+
+// fakeRunner returns a fixed exit code and counts how often it ran.
+type fakeRunner struct {
+	exit  int
+	calls int
+}
+
+func (f *fakeRunner) Run(time.Duration, string, []string) policy.ProcResult {
+	f.calls++
+	return policy.ProcResult{ExitCode: f.exit}
+}
+
+func gateWithCheck(source string, action policy.Action, exit int, when policy.When, runner policy.CustomCheckRunner) policy.Policy {
+	return policy.NewCommandGate(source, policy.Spec{
+		Target: policy.Target{Module: policy.ModulePermission, Tool: "git"},
+		Action: action,
+		Rules: []policy.Rule{{
+			To: policy.To{Label: "write", Functions: []string{"push"}},
+			Options: &policy.Options{CustomCheck: &policy.CustomCheck{
+				Command: "check",
+				When:    []policy.When{when},
+			}},
+		}},
+	}, policy.Deps{Runner: runner})
+}
+
+func plainGate(source string, action policy.Action) policy.Policy {
+	return policy.NewCommandGate(source, policy.Spec{
+		Target: policy.Target{Module: policy.ModulePermission, Tool: "git"},
+		Action: action,
+		Rules:  []policy.Rule{{To: policy.To{Label: "write", Functions: []string{"push"}}}},
+	}, policy.Deps{})
+}
+
+// customCheck overrides only its own policy's action, and that verdict then
+// competes under strictest-wins. A non-strictest policy's check now runs
+// and can escalate the result (previously only the strictest policy's
+// check ran, and it overrode the final decision).
+func TestEvaluateCommand_CustomCheckOfLowerPolicyCanEscalate(t *testing.T) {
+	runner := &fakeRunner{exit: 1}
+	e := NewEvaluator([]policy.Policy{
+		gateWithCheck("a.yaml", policy.ActionAllow, 1, policy.When{Key: "exit", Value: 1, Action: policy.ActionDeny}, runner),
+		plainGate("b.yaml", policy.ActionConfirm),
+	})
+
+	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}})
+	if got.Action != policy.ActionDeny {
+		t.Fatalf("expected A's customCheck (ALLOW -> DENY) to beat B's CONFIRM, got %s", got.Action)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("expected the customCheck to run once, ran %d times", runner.calls)
+	}
+}
+
+func TestEvaluateCommand_CustomCheckDowngradeStillLosesToStricterPolicy(t *testing.T) {
+	runner := &fakeRunner{exit: 0}
+	e := NewEvaluator([]policy.Policy{
+		gateWithCheck("a.yaml", policy.ActionConfirm, 0, policy.When{Key: "exit", Value: 0, Action: policy.ActionAllow}, runner),
+		plainGate("b.yaml", policy.ActionConfirm),
+	})
+
+	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}})
+	if got.Action != policy.ActionConfirm {
+		t.Fatalf("expected B's CONFIRM to win over A's downgraded ALLOW, got %s", got.Action)
+	}
+}
+
+func TestEvaluateCommand_CustomCheckRunsEvenWhenAnotherPolicyDenies(t *testing.T) {
+	runner := &fakeRunner{exit: 1}
+	e := NewEvaluator([]policy.Policy{
+		gateWithCheck("a.yaml", policy.ActionAllow, 1, policy.When{Key: "exit", Value: 1, Action: policy.ActionConfirm}, runner),
+		plainGate("b.yaml", policy.ActionDeny),
+	})
+
+	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}})
+	if got.Action != policy.ActionDeny {
+		t.Fatalf("expected DENY, got %s", got.Action)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("pinning the side effect: A's customCheck runs even though B decides; ran %d times", runner.calls)
+	}
+}
+
+func TestEvaluateCommand_NilRunnerSkipsCustomCheck(t *testing.T) {
+	e := NewEvaluator([]policy.Policy{
+		gateWithCheck("a.yaml", policy.ActionConfirm, 0, policy.When{Key: "exit", Value: 0, Action: policy.ActionAllow}, nil),
+	})
+
+	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}})
+	if got.Action != policy.ActionConfirm || got.CustomCheck != nil {
+		t.Fatalf("expected the policy's own CONFIRM and no check result without a Runner, got %+v", got)
+	}
+}
+
+// laterPolicy is a command evaluator at a later priority level, standing
+// in for a fallback kind such as a manifest.
+type laterPolicy struct {
+	action policy.Action
+	calls  *int
+}
+
+func (laterPolicy) Meta() policy.Meta    { return policy.Meta{Kind: "Later", Source: "later.yaml"} }
+func (laterPolicy) Lint() []policy.Issue { return nil }
+func (laterPolicy) Priority() int        { return 100 }
+func (l laterPolicy) Evaluate(shellcmd.SimpleCommand) (policy.Verdict, bool) {
+	*l.calls++
+	return policy.Verdict{Action: l.action, Source: "later.yaml"}, true
+}
+
+func TestEvaluateCommand_FirstPriorityLevelWithVerdictDecides(t *testing.T) {
+	calls := 0
+	later := laterPolicy{action: policy.ActionDeny, calls: &calls}
+
+	// A level-0 policy matches: the later level must not be consulted,
+	// even though it is stricter.
+	e := NewEvaluator([]policy.Policy{later, plainGate("a.yaml", policy.ActionAllow)})
+	got := e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"push"}})
+	if got.Action != policy.ActionAllow || calls != 0 {
+		t.Fatalf("expected level 0's ALLOW to decide without consulting level 100, got %s (later consulted %d times)", got.Action, calls)
+	}
+
+	// No level-0 policy matches: the later level is the fallback.
+	got = e.EvaluateCommand(shellcmd.SimpleCommand{Tool: "git", Args: []string{"status"}})
+	if got.Action != policy.ActionDeny || got.Default {
+		t.Fatalf("expected the level-100 fallback to decide DENY, got %+v", got)
 	}
 }

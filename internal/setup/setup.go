@@ -58,7 +58,7 @@ func Run(policiesDir, checkLogDir, recordLogDir string, starterFS fs.FS) (Result
 		return res, fmt.Errorf("create record log dir: %w", err)
 	}
 
-	existing, err := policy.LoadDir(policiesDir)
+	existing, err := policy.LoadDir(policiesDir, policy.Deps{})
 	if err != nil {
 		return res, fmt.Errorf("check existing policies in %q: %w", policiesDir, err)
 	}
